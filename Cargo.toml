@@ -1,0 +1,19 @@
+[package]
+name = "herdr-interactive-diff"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kaleb"]
+description = "Herdr Interactive Diff: AI-Augmented Git Diff & Artifact Viewer Plugin for Herdr"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "2.0"
+unicode-width = "0.2"
+portable-pty = "0.9.0"
+vt100 = "0.16.2"
+tui-term = "0.3.4"

@@ -1,0 +1,45 @@
+# Herdr Plugin Manifest for herdr-interactive-diff
+# AI-Augmented Git Diff & Artifact Viewer with Herdr Agent Splits
+
+id = "herdr-interactive-diff"
+name = "Interactive Diff"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "AI-Augmented Git Diff & Artifact Viewer with Herdr agent splits and multi-lens reviews"
+platforms = ["linux", "macos", "windows"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["cargo", "build", "--release"]
+
+[[build]]
+platforms = ["windows"]
+command = ["cargo", "build", "--release"]
+
+[[panes]]
+id = "diff"
+title = "Interactive Diff"
+placement = "split"
+command = ["./target/release/herdr-interactive-diff"]
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "diff-windows"
+title = "Interactive Diff"
+placement = "split"
+command = [".\\target\\release\\herdr-interactive-diff.exe"]
+platforms = ["windows"]
+
+[[actions]]
+id = "open-diff"
+title = "Open Interactive Diff"
+description = "Open interactive git diff and artifact viewer in a Herdr split"
+command = ["./target/release/herdr-interactive-diff"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-diff-windows"
+title = "Open Interactive Diff"
+description = "Open interactive git diff and artifact viewer in a Herdr split"
+command = [".\\target\\release\\herdr-interactive-diff.exe"]
+platforms = ["windows"]
