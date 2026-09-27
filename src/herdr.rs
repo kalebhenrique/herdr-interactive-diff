@@ -43,13 +43,43 @@ impl AgentState {
 
 /// Native integration client with Herdr (Terminal Workspace Manager for AI Coding Agents).
 /// Manages live status tracking for both Antigravity CLI and Claude Code chats on Weavers pane.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HerdrClient {
     pub socket_path: PathBuf,
     pub pane_id: String,
+    tx: std::sync::mpsc::Sender<serde_json::Value>,
+}
+
+impl std::fmt::Debug for HerdrClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HerdrClient")
+            .field("socket_path", &self.socket_path)
+            .field("pane_id", &self.pane_id)
+            .finish()
+    }
 }
 
 impl HerdrClient {
+    /// Creates a HerdrClient with the specified socket path and pane ID
+    pub fn new(socket_path: PathBuf, pane_id: String) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        let sp = socket_path.clone();
+        std::thread::Builder::new()
+            .name("herdr-rpc-worker".to_string())
+            .spawn(move || {
+                while let Ok(req) = rx.recv() {
+                    let _ = send_herdr_request(&sp, &req);
+                }
+            })
+            .ok();
+
+        Self {
+            socket_path,
+            pane_id,
+            tx,
+        }
+    }
+
     /// Attempts to initialize the Herdr client by discovering the Unix socket and current pane ID.
     pub fn try_detect() -> Option<Self> {
         let socket_path = resolve_socket_path()?;
@@ -58,136 +88,23 @@ impl HerdrClient {
         }
 
         // 1. Try obtaining pane_id directly from HERDR_PANE_ID env var
-        if let Ok(pane_id) = std::env::var("HERDR_PANE_ID") {
-            if !pane_id.trim().is_empty() {
-                return Some(Self {
-                    socket_path,
-                    pane_id: pane_id.trim().to_string(),
-                });
+        let pane_id = if let Ok(env_id) = std::env::var("HERDR_PANE_ID") {
+            if !env_id.trim().is_empty() {
+                Some(env_id.trim().to_string())
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // 2. Fallback: Query Herdr socket for the active pane matching current process PID
-        let pane_id = discover_pane_id(&socket_path)?;
-        Some(Self {
-            socket_path,
-            pane_id,
-        })
+        let pane_id = pane_id.or_else(|| discover_pane_id(&socket_path))?;
+
+        Some(Self::new(socket_path, pane_id))
     }
 
-    /// Spawns an agent in a new Herdr split pane and starts the agent CLI
-    pub fn split_agent(&self, agent: &AgentKind, cwd: Option<&str>) -> Option<String> {
-        let seq = next_seq();
-        let cmd = agent.command_bin();
-        let mut params = serde_json::json!({
-            "direction": "right",
-            "ratio": 0.5,
-        });
-        if !self.pane_id.is_empty() {
-            params["target_pane_id"] = serde_json::Value::String(self.pane_id.clone());
-        }
-        if let Some(dir) = cwd {
-            params["cwd"] = serde_json::Value::String(dir.to_string());
-        }
-
-        let req = serde_json::json!({
-            "id": format!("herdr-diff:split:{}", seq),
-            "method": "pane.split",
-            "params": params,
-        });
-
-        let mut created_pane = None;
-        if let Some(res) = send_herdr_request(&self.socket_path, &req) {
-            if let Some(new_pane_id) = res.pointer("/result/pane/pane_id").and_then(|v| v.as_str()) {
-                created_pane = Some(new_pane_id.to_string());
-            } else if let Some(new_pane_id) = res.pointer("/result/pane_id").and_then(|v| v.as_str()) {
-                created_pane = Some(new_pane_id.to_string());
-            }
-        }
-
-        // Fallback using herdr CLI if socket didn't return a pane
-        let herdr_bin = std::env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".to_string());
-        if created_pane.is_none() {
-            let mut cli_cmd = std::process::Command::new(&herdr_bin);
-            if !self.pane_id.is_empty() {
-                cli_cmd.args(["pane", "split", &self.pane_id, "--direction", "right"]);
-            } else {
-                cli_cmd.args(["pane", "split", "--direction", "right"]);
-            }
-            if let Some(dir) = cwd {
-                cli_cmd.args(["--cwd", dir]);
-            }
-            if let Ok(output) = cli_cmd.output() {
-                let out_str = String::from_utf8_lossy(&output.stdout);
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(out_str.trim()) {
-                    if let Some(id) = json.pointer("/result/pane/pane_id").and_then(|v| v.as_str()) {
-                        created_pane = Some(id.to_string());
-                    } else if let Some(id) = json.pointer("/result/pane_id").and_then(|v| v.as_str()) {
-                        created_pane = Some(id.to_string());
-                    }
-                }
-            }
-        }
-
-        // Once pane is created, run the agent command inside it
-        if let Some(ref pane) = created_pane {
-            let run_req = serde_json::json!({
-                "id": format!("herdr-diff:run:{}", next_seq()),
-                "method": "pane.run",
-                "params": {
-                    "pane_id": pane,
-                    "command": cmd,
-                }
-            });
-            let _ = send_herdr_request(&self.socket_path, &run_req);
-
-            // Also trigger via CLI as fallback
-            let _ = std::process::Command::new(&herdr_bin)
-                .args(["pane", "run", pane, cmd])
-                .output();
-        }
-
-        created_pane
-    }
-
-    /// Closes a pane in Herdr
-    pub fn close_pane(&self, pane_id: &str) -> bool {
-        let seq = next_seq();
-        let req = serde_json::json!({
-            "id": format!("herdr-diff:close:{}", seq),
-            "method": "pane.close",
-            "params": {
-                "pane_id": pane_id
-            }
-        });
-        if send_herdr_request(&self.socket_path, &req).is_some() {
-            return true;
-        }
-
-        // Fallback using herdr CLI
-        let herdr_bin = std::env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".to_string());
-        let _ = std::process::Command::new(herdr_bin)
-            .args(["pane", "close", pane_id])
-            .output();
-        true
-    }
-
-    /// Focuses a pane in Herdr
-    #[allow(dead_code)]
-    pub fn focus_pane(&self, pane_id: &str) {
-        let seq = next_seq();
-        let req = serde_json::json!({
-            "id": format!("herdr-diff:focus:{}", seq),
-            "method": "pane.zoom",
-            "params": {
-                "pane_id": pane_id,
-                "mode": "toggle"
-            }
-        });
-        let _ = send_herdr_request(&self.socket_path, &req);
-    }
-
-    /// Reports the active agent status and metadata on Herdr pane without creating duplicate panels
+    /// Reports the active agent status and metadata on Herdr pane without creating duplicate panels or title conflicts
     pub fn report_active_agent(
         &self,
         agent: &str,
@@ -196,15 +113,7 @@ impl HerdrClient {
         session_id: Option<&str>,
         is_reviewer: bool,
     ) {
-        let seq = next_seq();
         let agent_kind = AgentKind::parse(agent).unwrap_or(AgentKind::Agy);
-
-        // 1. Title and state_labels formatted specifically for the agent and reviewer status
-        let title = if is_reviewer {
-            format!("Interactive Diff: {} (Reviewer)", agent_kind.display_name())
-        } else {
-            format!("Interactive Diff: {}", agent_kind.display_name())
-        };
 
         let state_labels = if is_reviewer {
             serde_json::json!({
@@ -220,19 +129,22 @@ impl HerdrClient {
             })
         };
 
+        // 1. Report display metadata (agent kind & state labels) to Herdr.
+        // NOTE: We deliberately do NOT include a custom "title" here, allowing plugins
+        // like herdr-auto-title or the user to manage the tab title without an infinite rename conflict.
+        let meta_seq = next_seq();
         let meta_req = serde_json::json!({
-            "id": format!("herdr-diff:meta:{}", seq),
+            "id": format!("herdr-diff:meta:{}", meta_seq),
             "method": "pane.report_metadata",
             "params": {
                 "pane_id": &self.pane_id,
                 "source": "herdr-interactive-diff",
                 "display_agent": agent_kind.as_str(),
-                "title": title,
                 "state_labels": state_labels,
-                "seq": seq,
+                "seq": meta_seq,
             }
         });
-        let _ = send_herdr_request(&self.socket_path, &meta_req);
+        let _ = self.tx.send(meta_req);
 
         let official_source = agent_kind.herdr_source();
 
@@ -258,7 +170,7 @@ impl HerdrClient {
             "method": "pane.report_agent",
             "params": params,
         });
-        let _ = send_herdr_request(&self.socket_path, &request);
+        let _ = self.tx.send(request);
 
         // 3. Report active agent session if known
         if let Some(sess) = session_id {
@@ -274,7 +186,7 @@ impl HerdrClient {
                     "seq": sess_seq,
                 }
             });
-            let _ = send_herdr_request(&self.socket_path, &session_req);
+            let _ = self.tx.send(session_req);
         }
     }
 
@@ -290,22 +202,33 @@ impl HerdrClient {
         self.report_active_agent("claude", state, message, session_id, is_reviewer);
     }
 
+    /// Releases specific registered agents on exit without stalling
+    pub fn release_agents(&self, agents: &[&str]) {
+        for agent_name in agents {
+            if let Some(agent) = AgentKind::parse(agent_name) {
+                let ag_str = agent.as_str();
+                let sources = [agent.herdr_source(), "weavers", "herdr-interactive-diff"];
+                for source in sources {
+                    let s = next_seq();
+                    let req = serde_json::json!({
+                        "id": format!("weavers:release:{}:{}:{}", ag_str, source, s),
+                        "method": "pane.release_agent",
+                        "params": {
+                            "pane_id": &self.pane_id,
+                            "source": source,
+                            "agent": ag_str,
+                            "seq": s,
+                        }
+                    });
+                    let _ = self.tx.send(req);
+                }
+            }
+        }
+    }
+
     /// Cleanly releases registered agent state on Weavers pane when exiting
     pub fn release_all(&mut self) {
-        for (agent, source) in &[("agy", "herdr:antigravity_cli"), ("claude", "herdr:claude"), ("agy", "weavers"), ("claude", "weavers")] {
-            let s = next_seq();
-            let req = serde_json::json!({
-                "id": format!("weavers:release:{}:{}:{}", agent, source, s),
-                "method": "pane.release_agent",
-                "params": {
-                    "pane_id": &self.pane_id,
-                    "source": source,
-                    "agent": agent,
-                    "seq": s,
-                }
-            });
-            let _ = send_herdr_request(&self.socket_path, &req);
-        }
+        self.release_agents(&["agy", "claude"]);
     }
 }
 
@@ -337,9 +260,9 @@ pub fn detect_session_state(session: &TerminalSession, agent_name: &str) -> Agen
     let lower = bottom_text.to_lowercase();
 
     // 1. Check for Blocked state (manual user approval, confirmation, question dialog)
-    match agent_name {
+    let is_blocked = match agent_name {
         "claude" => {
-            let is_blocked = lower.contains("waiting for permission")
+            lower.contains("waiting for permission")
                 || (lower.contains("esc to cancel")
                     && (lower.contains("enter to confirm")
                         || lower.contains("enter to select")
@@ -350,23 +273,28 @@ pub fn detect_session_state(session: &TerminalSession, agent_name: &str) -> Agen
                 || lower.contains("approval required")
                 || lower.contains("requesting permission for:")
                 || lower.contains("approve this command")
-                || (lower.contains("[y/n]") || lower.contains("(y/n)"));
-            if is_blocked {
-                return AgentState::Blocked;
-            }
+                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
         }
         "agy" => {
-            let is_blocked = lower.contains("requesting permission for:")
+            lower.contains("requesting permission for:")
                 || lower.contains("do you want to proceed?")
                 || lower.contains("tab amend")
                 || lower.contains("edit command")
                 || lower.contains("permission required")
-                || (lower.contains("[y/n]") || lower.contains("(y/n)"));
-            if is_blocked {
-                return AgentState::Blocked;
-            }
+                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
         }
-        _ => {}
+        _ => {
+            lower.contains("requesting permission")
+                || lower.contains("permission required")
+                || lower.contains("do you want to proceed?")
+                || lower.contains("approval required")
+                || lower.contains("allow this command")
+                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
+        }
+    };
+
+    if is_blocked {
+        return AgentState::Blocked;
     }
 
     // 2. Check for Working state (spinners, thinking indicator, background task active)
@@ -381,20 +309,33 @@ pub fn detect_session_state(session: &TerminalSession, agent_name: &str) -> Agen
 
     match agent_name {
         "claude"
-            if bottom_text.contains("esc to interrupt")
-                || bottom_text.contains("Thinking…")
-                || bottom_text.contains("Thinking...")
-                || bottom_text.contains("Waiting for")
-                || bottom_text.contains("MCP task") =>
+            if lower.contains("esc to interrupt")
+                || lower.contains("ctrl+c to interrupt")
+                || lower.contains("thinking…")
+                || lower.contains("thinking...")
+                || lower.contains("waiting for")
+                || lower.contains("mcp task") =>
         {
             return AgentState::Working;
         }
         "agy"
-            if bottom_text.contains("Thinking")
-                || bottom_text.contains("Thought for")
-                || bottom_text.contains("Analyzing")
-                || bottom_text.contains("Generating")
-                || bottom_text.contains("Running command") =>
+            if lower.contains("thinking…")
+                || lower.contains("thinking...")
+                || lower.contains("analyzing…")
+                || lower.contains("analyzing...")
+                || lower.contains("generating…")
+                || lower.contains("generating...")
+                || lower.contains("running command") =>
+        {
+            return AgentState::Working;
+        }
+        _ if lower.contains("thinking…")
+            || lower.contains("thinking...")
+            || lower.contains("analyzing…")
+            || lower.contains("analyzing...")
+            || lower.contains("generating…")
+            || lower.contains("generating...")
+            || lower.contains("running command") =>
         {
             return AgentState::Working;
         }
@@ -515,10 +456,7 @@ mod tests {
 
     #[test]
     fn test_payload_generation() {
-        let client = HerdrClient {
-            socket_path: PathBuf::from("/tmp/herdr.sock"),
-            pane_id: "test:p1".to_string(),
-        };
+        let client = HerdrClient::new(PathBuf::from("/tmp/herdr.sock"), "test:p1".to_string());
         assert_eq!(client.pane_id, "test:p1");
     }
 

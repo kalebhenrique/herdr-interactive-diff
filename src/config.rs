@@ -164,29 +164,6 @@ impl AgentKind {
             AgentKind::Grok => "Grok Build (grok)",
         }
     }
-
-    /// Short icon / symbol
-    pub fn icon(&self) -> &'static str {
-        match self {
-            AgentKind::Agy => "󰚩",
-            AgentKind::Claude => "󰛄",
-            AgentKind::Pi => "󰘧",
-            AgentKind::Amp => "⚡",
-            AgentKind::Codex => "󰘐",
-            AgentKind::Copilot => "󰊤",
-            AgentKind::Devin => "󰍡",
-            AgentKind::Droid => "󰚥",
-            AgentKind::Kimi => "󰭹",
-            AgentKind::OpenCode => "󰘦",
-            AgentKind::Kilo => "󰓹",
-            AgentKind::Hermes => "󰈙",
-            AgentKind::QoderCli => "󰌑",
-            AgentKind::Qwen => "󰑣",
-            AgentKind::Cursor => "󰆍",
-            AgentKind::MastraCode => "󰒋",
-            AgentKind::Grok => "󱚢",
-        }
-    }
 }
 
 impl std::fmt::Display for AgentKind {

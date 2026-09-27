@@ -35,6 +35,39 @@ pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+fn read_cmd_output(cmd: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(cmd).args(args).output().ok()?;
+    if output.status.success() {
+        let text = String::from_utf8(output.stdout).ok()?;
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Reads text from the system clipboard using native platform tools.
+pub fn get_clipboard_text() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(t) = read_cmd_output("pbpaste", &[]) {
+            return Some(t);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(t) = read_cmd_output("wl-paste", &[]) {
+            return Some(t);
+        }
+        if let Some(t) = read_cmd_output("xclip", &["-selection", "clipboard", "-o"]) {
+            return Some(t);
+        }
+    }
+
+    None
+}
+
 fn copy_with(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> {
     let mut child = Command::new(cmd)
         .args(args)

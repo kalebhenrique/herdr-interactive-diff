@@ -16,9 +16,9 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        MouseButton, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -263,7 +263,7 @@ async fn main() -> Result<()> {
     // 3. Inicialização do Terminal Ratatui
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let enhanced_keyboard = supports_keyboard_enhancement().unwrap_or(false);
     if enhanced_keyboard {
         let _ = execute!(
@@ -618,6 +618,17 @@ async fn main() -> Result<()> {
                     }
                     _ => {}
                 }
+            } else if let Event::Paste(text) = ev {
+                match app.active_tab {
+                    ActiveTab::Agents => {
+                        app.paste_text_to_agent(&text);
+                    }
+                    _ => {
+                        if app.is_asking_question {
+                            app.question_input.push_str(&text);
+                        }
+                    }
+                }
             } else if let Event::Key(key) = ev {
                 if key.kind == KeyEventKind::Press {
                     // Identifica se a tecla Control foi pressionada
@@ -708,6 +719,12 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
+                    // Global shortcut: Ctrl+S copies review from Review AI to Primary AI (validation / anti-overengineering)
+                    if is_ctrl && (key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S')) {
+                        app.trigger_antigravity_validation();
+                        continue;
+                    }
+
                     // Global shortcut to Cycle Tabs: Ctrl+T
                     if is_ctrl && (key.code == KeyCode::Char('t') || key.code == KeyCode::Char('T')) {
                         app.active_tab = match app.active_tab {
@@ -775,6 +792,12 @@ async fn main() -> Result<()> {
                                 app.toggle_agent_focus();
                                 continue;
                             }
+                            if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V')) {
+                                if let Some(clip) = crate::clipboard::get_clipboard_text() {
+                                    app.paste_text_to_agent(&clip);
+                                    continue;
+                                }
+                            }
                             let bytes = key_event_to_bytes(&key);
                             if !bytes.is_empty() {
                                 app.send_key_to_agent(&bytes);
@@ -796,10 +819,6 @@ async fn main() -> Result<()> {
                                         app.status_message = "Copied line to system clipboard (Cmd+C/pbcopy).".to_string();
                                     }
                                 }
-                                continue;
-                            }
-                            if is_ctrl && (key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S')) {
-                                app.trigger_antigravity_validation();
                                 continue;
                             }
                             match key.code {
@@ -929,10 +948,6 @@ async fn main() -> Result<()> {
                                 }
                                 continue;
                             }
-                            if is_ctrl && (key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S')) {
-                                app.trigger_antigravity_validation();
-                                continue;
-                            }
                             match key.code {
                                 KeyCode::Char('q') => {
                                     app.should_quit = true;
@@ -1015,7 +1030,7 @@ async fn main() -> Result<()> {
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     }
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
     terminal.show_cursor()?;
 
     Ok(())

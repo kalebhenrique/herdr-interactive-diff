@@ -563,6 +563,16 @@ mod tests {
 
     #[test]
     fn test_from_local_repo_with_untracked() {
+        struct CleanupGuard<'a>(&'a std::path::Path);
+        impl<'a> Drop for CleanupGuard<'a> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+
+        let dummy = std::path::Path::new(".dummy_untracked_test_file.tmp");
+        let _ = std::fs::write(dummy, "test untracked file content");
+        let _guard = CleanupGuard(dummy);
         let diff = GitDiff::from_local_repo(None).unwrap();
         assert!(!diff.files.is_empty());
         assert!(diff.files.iter().any(|f| f.status == FileStatus::Added));

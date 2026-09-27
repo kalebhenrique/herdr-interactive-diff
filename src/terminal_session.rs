@@ -186,7 +186,19 @@ impl TerminalSession {
         if !self.is_alive() {
             return;
         }
-        let payload = format!("\x1b[200~{}\x1b[201~\r", text);
+        let safe = text.replace("\x1b[201~", "");
+        let payload = format!("\x1b[200~{}\x1b[201~\r", safe);
+        self.send_bytes(payload.as_bytes());
+    }
+
+    /// Envia texto como colagem atômica usando Bracketed Paste Mode (\x1b[200~ ... \x1b[201~) sem quebra de linha forçada
+    pub fn paste_text(&self, text: &str) {
+        self.scroll_to_bottom();
+        if !self.is_alive() {
+            return;
+        }
+        let safe = text.replace("\x1b[201~", "");
+        let payload = format!("\x1b[200~{}\x1b[201~", safe);
         self.send_bytes(payload.as_bytes());
     }
 

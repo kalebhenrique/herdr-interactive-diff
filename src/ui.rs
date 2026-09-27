@@ -175,11 +175,10 @@ fn render_single_agent_panel(
     kind: crate::config::AgentKind,
     session: Option<&mut TerminalSession>,
     is_focused: bool,
-    top_right_hint: Option<&str>,
     area: Rect,
     pal: crate::theme::Palette,
 ) {
-    let (icon, name) = (kind.icon(), kind.display_name());
+    let cmd = kind.command_bin();
     let is_alive = session.as_ref().map(|s| s.is_alive()).unwrap_or(false);
 
     let border_style = if !is_alive && session.is_some() {
@@ -193,12 +192,12 @@ fn render_single_agent_panel(
     let scroll = session.as_ref().map(|s| s.scroll_offset()).unwrap_or(0);
     let title_span = if !is_alive && session.is_some() {
         Span::styled(
-            format!(" {} {} [STOPPED - Press Enter/Ctrl+O to restart] ", icon, name),
+            format!(" {} [STOPPED - Press Enter/Ctrl+O to restart] ", cmd),
             Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
         )
     } else if scroll > 0 {
         Span::styled(
-            format!(" {} {} [Scroll: +{} lines] [PageDown to return] ", icon, name, scroll),
+            format!(" {} [Scroll: +{} lines] [PageDown to return] ", cmd, scroll),
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         )
     } else {
@@ -207,23 +206,14 @@ fn render_single_agent_panel(
         } else {
             Style::default().fg(pal.subtext0)
         };
-        Span::styled(format!(" {} {} ", icon, name), style)
+        Span::styled(format!(" {} ", cmd), style)
     };
 
-    let mut block = Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(title_span);
-
-    if let Some(hint) = top_right_hint {
-        block = block.title(
-            Line::from(vec![
-                Span::styled(hint, Style::default().fg(pal.overlay0)),
-            ])
-            .alignment(ratatui::layout::Alignment::Right),
-        );
-    }
 
     if let Some(s) = session {
         let inner_area = block.inner(area);
@@ -236,8 +226,8 @@ fn render_single_agent_panel(
     }
 
     let fallback = Paragraph::new(format!(
-        "{} terminal not started or terminated.\nPress [Enter] or [Ctrl+O] to start the session.",
-        name
+        "'{}' terminal not started or terminated.\nPress [Enter] or [Ctrl+O] to start the session.",
+        cmd
     ))
     .block(block);
     f.render_widget(fallback, area);
@@ -263,7 +253,6 @@ fn render_agents_view(f: &mut Frame, app: &mut App, area: Rect) {
             app.config.primary_agent,
             app.agy_session.as_mut(),
             is_primary_focused,
-            Some("Primary AI • [Tab] Switch"),
             chunks[0],
             pal,
         );
@@ -273,7 +262,6 @@ fn render_agents_view(f: &mut Frame, app: &mut App, area: Rect) {
             app.config.review_agent,
             app.claude_session.as_mut(),
             is_review_focused,
-            Some("Review AI • [Ctrl+R] Close"),
             chunks[1],
             pal,
         );
@@ -283,7 +271,6 @@ fn render_agents_view(f: &mut Frame, app: &mut App, area: Rect) {
             app.config.primary_agent,
             app.agy_session.as_mut(),
             true,
-            Some("[Ctrl+R] Split Review AI"),
             area,
             pal,
         );
@@ -524,10 +511,8 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 in_comment_block,
                 ..
             } => {
-                let old_str = old_lineno
-                    .map(|n| format!("{:>4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_str = new_lineno
+                let lineno = new_lineno.or(*old_lineno);
+                let lineno_str = lineno
                     .map(|n| format!("{:>4}", n))
                     .unwrap_or_else(|| "    ".to_string());
 
@@ -576,7 +561,7 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
 
                 let mut spans = vec![
                     gutter_border,
-                    Span::styled(format!("{} {} {} ", old_str, new_str, sign), num_style),
+                    Span::styled(format!("{} {} ", lineno_str, sign), num_style),
                     Span::styled(content.clone(), line_style),
                 ];
 
@@ -1070,31 +1055,31 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
             Span::styled("  Mouse Click    ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Click tabs at top ([1] Git Diff / [2] Artifacts)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Mouse Drag     ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Drag to select text in Diff/Artifacts (auto-copies to clipboard)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Cmd+C / Ctrl+C ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Copy current selection or line to system clipboard (pbcopy)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+R         ", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
-            Span::raw("Toggle Review AI native Herdr split pane"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+T         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Cycle between Git Diff and Artifacts tabs"),
+            Span::raw("Click tabs at top ([1] Agents / [2] Git Diff / [3] Artifacts)"),
         ]),
         Line::from(vec![
             Span::styled("  1 / F1         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Switch to [1] Git Diff"),
+            Span::raw("Switch to [1] Agents"),
         ]),
         Line::from(vec![
             Span::styled("  2 / F2         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Switch to [2] Artifacts (when available)"),
+            Span::raw("Switch to [2] Git Diff"),
+        ]),
+        Line::from(vec![
+            Span::styled("  3 / F3         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Switch to [3] Artifacts (when available)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+T         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Cycle between active tabs"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+A         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Switch AI Model / Agent (choose from 17 supported agents)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::raw("Copy Review AI output to Primary AI for validation"),
         ]),
         Line::from(vec![
             Span::styled("  Ctrl+H / ?     ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
@@ -1106,7 +1091,44 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("󰊢 TAB 1: GIT DIFF & REVIEW COMMENTS", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
+            Span::styled("󰚩 TAB 1: AI AGENTS TERMINAL", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from("──────────────────────────────────────────────────────────────────"),
+        Line::from(vec![
+            Span::styled("  Ctrl+R         ", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
+            Span::raw("Toggle Review AI split view (50/50 split) / Close Review AI"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::raw("Copy Review AI output to Primary AI (Anti-overengineering validation)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+O / Ctrl+W", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Switch keyboard focus between Primary and Review AI panels"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Mouse Click    ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Focus clicked AI panel (left = Primary, right = Review)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Mouse Scroll   ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Scroll up/down in active terminal scrollback history"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Mouse Drag     ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("Native terminal text selection (Cmd+C to copy)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+V         ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::raw("Paste text from system clipboard into focused AI terminal"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tab            ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::raw("Sent directly to AI CLI for autocomplete (never captured)"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("󰊢 TAB 2: GIT DIFF & REVIEW COMMENTS", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
         ]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
@@ -1116,6 +1138,10 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("  Mouse Drag     ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
             Span::raw("Select code block to copy to system clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Cmd+C / Ctrl+C ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::raw("Copy current selection or line to system clipboard (pbcopy)"),
         ]),
         Line::from(vec![
             Span::styled("  ?              ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
@@ -1138,12 +1164,16 @@ fn render_help_modal(f: &mut Frame, app: &App) {
             Span::raw("Toggle floating review tooltip (Caveman / Insight)"),
         ]),
         Line::from(vec![
+            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::raw("Send current review/diff to Primary AI for validation"),
+        ]),
+        Line::from(vec![
             Span::styled("  r / F5         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
             Span::raw("Reload Git Diff from disk"),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("󰈙 TAB 2: WORKSPACE & AI ARTIFACTS", Style::default().fg(pal.teal).add_modifier(Modifier::BOLD)),
+            Span::styled("󰈙 TAB 3: WORKSPACE & AI ARTIFACTS", Style::default().fg(pal.teal).add_modifier(Modifier::BOLD)),
         ]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
@@ -1294,8 +1324,8 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
     f.render_widget(Clear, modal_area);
 
     let title_text = match app.agent_picker_target {
-        crate::app::AgentPickerTarget::Primary => " Select Primary AI [Tab to Switch] ",
-        crate::app::AgentPickerTarget::Review => " Select Review AI [Tab to Switch] ",
+        crate::app::AgentPickerTarget::Primary => "Select Primary AI",
+        crate::app::AgentPickerTarget::Review => "Select Review AI",
     };
 
     let block = Block::default()
@@ -1303,7 +1333,7 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(pal.accent))
         .title(Span::styled(
-            format!(" 󰚩{} ", title_text),
+            format!(" {} ", title_text),
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         ))
         .title(
@@ -1345,9 +1375,9 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
     };
 
     let target_line = Line::from(vec![
-        Span::styled(format!(" 󰚩 Primary: {} ", app.config.primary_agent.display_name()), primary_style),
+        Span::styled(format!(" Primary: {} ", app.config.primary_agent.display_name()), primary_style),
         Span::raw("  "),
-        Span::styled(format!(" 󰛄 Review: {} ", app.config.review_agent.display_name()), review_style),
+        Span::styled(format!(" Review: {} ", app.config.review_agent.display_name()), review_style),
     ]);
     f.render_widget(Paragraph::new(target_line), chunks[0]);
 
@@ -1365,7 +1395,7 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
             let is_active = agent == current_configured;
 
             let check_mark = if is_active { "✔ " } else { "  " };
-            let text = format!("{} {} {}", check_mark, agent.icon(), agent.display_name());
+            let text = format!("{} {}", check_mark, agent.display_name());
 
             let style = if is_cursor {
                 Style::default()
@@ -1471,6 +1501,7 @@ mod tests {
         assert!(content.contains("KEYBINDINGS GUIDE"));
         assert!(content.contains("Ctrl+T"));
         assert!(content.contains("Ctrl+R"));
+        assert!(content.contains("Ctrl+S"));
         assert!(content.contains("HERDR INTERACTIVE DIFF"));
         assert!(content.contains("Git Diff"));
     }
