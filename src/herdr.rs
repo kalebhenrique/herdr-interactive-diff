@@ -103,8 +103,41 @@ impl HerdrClient {
 
         Some(Self::new(socket_path, pane_id))
     }
+}
 
-    /// Reports the active agent status and metadata on Herdr pane without creating duplicate panels or title conflicts
+/// Shape of `HERDR_PLUGIN_CONTEXT_JSON` injected by Herdr runtime into plugin commands and panes.
+#[derive(serde::Deserialize, Default, Debug)]
+struct HerdrPluginContext {
+    #[serde(default)]
+    focused_pane_cwd: Option<String>,
+    #[serde(default)]
+    workspace_cwd: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+/// Extracts the most specific working directory candidate from a Herdr plugin context JSON string.
+pub fn parse_herdr_working_dir_from_json(json_str: &str) -> Option<String> {
+    let raw: HerdrPluginContext = serde_json::from_str(json_str).ok()?;
+    raw.focused_pane_cwd
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| raw.workspace_cwd.filter(|s| !s.trim().is_empty()))
+        .or_else(|| raw.cwd.filter(|s| !s.trim().is_empty()))
+}
+
+/// Detects the target working directory from Herdr plugin context, if available and valid on disk.
+pub fn detect_herdr_working_dir() -> Option<String> {
+    let json_str = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok()?;
+    let candidate = parse_herdr_working_dir_from_json(&json_str)?;
+    let path = Path::new(&candidate);
+    if path.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+impl HerdrClient {
     pub fn report_active_agent(
         &self,
         agent: &str,
@@ -493,5 +526,38 @@ mod tests {
         });
         assert_eq!(primary_labels["working"], "Working");
         assert_eq!(primary_labels["idle"], "Ready");
+    }
+
+    #[test]
+    fn test_parse_herdr_working_dir_prefers_focused_pane_cwd() {
+        let json = r#"{"focused_pane_cwd": "/path/to/pane", "workspace_cwd": "/path/to/ws"}"#;
+        assert_eq!(
+            super::parse_herdr_working_dir_from_json(json),
+            Some("/path/to/pane".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_herdr_working_dir_falls_back_to_workspace_cwd() {
+        let json = r#"{"focused_pane_cwd": "", "workspace_cwd": "/path/to/ws"}"#;
+        assert_eq!(
+            super::parse_herdr_working_dir_from_json(json),
+            Some("/path/to/ws".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_herdr_working_dir_falls_back_to_cwd() {
+        let json = r#"{"cwd": "/path/to/cwd"}"#;
+        assert_eq!(
+            super::parse_herdr_working_dir_from_json(json),
+            Some("/path/to/cwd".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_herdr_working_dir_handles_empty_or_malformed() {
+        assert_eq!(super::parse_herdr_working_dir_from_json("{}"), None);
+        assert_eq!(super::parse_herdr_working_dir_from_json("invalid json"), None);
     }
 }

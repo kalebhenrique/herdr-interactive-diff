@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
         config::load_config()
     };
 
-    // Expande til (~) se presente no caminho do diretório, ou usa o diretório de trabalho atual
+    // Expande til (~) se presente no caminho do diretório, detecta contexto do Herdr ou usa o diretório atual
     let target_dir = target_dir
         .map(|dir| {
             if let Some(stripped) = dir.strip_prefix("~/") {
@@ -192,11 +192,18 @@ async fn main() -> Result<()> {
                 dir
             }
         })
+        .or_else(|| herdr::detect_herdr_working_dir())
         .or_else(|| {
             std::env::current_dir()
                 .ok()
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
         });
+
+    // Se um diretório de trabalho foi determinado, sincroniza o processo para que
+    // subprocessos (Agy, Claude), comandos git e caminhos relativos operem na pasta correta.
+    if let Some(ref dir) = target_dir {
+        let _ = std::env::set_current_dir(dir);
+    }
 
     // 1. Extração do Diff
     let diff = if is_demo {

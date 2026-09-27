@@ -30,16 +30,44 @@ placement = "split"
 command = [".\\target\\release\\herdr-interactive-diff.exe"]
 platforms = ["windows"]
 
+[[panes]]
+id = "diff-tab"
+title = "Interactive Diff"
+placement = "tab"
+command = ["./target/release/herdr-interactive-diff"]
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "diff-tab-windows"
+title = "Interactive Diff"
+placement = "tab"
+command = [".\\target\\release\\herdr-interactive-diff.exe"]
+platforms = ["windows"]
+
+[[actions]]
+id = "open-tab"
+title = "Open Interactive Diff (Tab)"
+description = "Open interactive git diff and artifact viewer in a new tab"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-tab"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-tab-windows"
+title = "Open Interactive Diff (Tab)"
+description = "Open interactive git diff and artifact viewer in a new tab"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-tab-windows"]
+platforms = ["windows"]
+
 [[actions]]
 id = "open-diff"
 title = "Open Interactive Diff"
 description = "Open interactive git diff and artifact viewer in a Herdr split"
-command = ["./target/release/herdr-interactive-diff"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff"]
 platforms = ["linux", "macos"]
 
 [[actions]]
 id = "open-diff-windows"
 title = "Open Interactive Diff"
 description = "Open interactive git diff and artifact viewer in a Herdr split"
-command = [".\\target\\release\\herdr-interactive-diff.exe"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-windows"]
 platforms = ["windows"]

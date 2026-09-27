@@ -2,9 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs,
-    },
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
     Frame,
 };
 use tui_term::widget::PseudoTerminal;
@@ -86,9 +84,15 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let repo_info = if area.width >= 75 {
         if let Some(path) = &app.repo_path {
             let repo_name = path.split('/').rfind(|s| !s.is_empty()).unwrap_or(path);
-            Some((format!("󰊢 herdr-interactive-diff • {}", repo_name), " • Ctrl+H for help "))
+            Some((
+                format!("󰊢 herdr-interactive-diff • {}", repo_name),
+                " • Ctrl+H for help ",
+            ))
         } else {
-            Some(("󰊢 herdr-interactive-diff".to_string(), " • Ctrl+H for help "))
+            Some((
+                "󰊢 herdr-interactive-diff".to_string(),
+                " • Ctrl+H for help ",
+            ))
         }
     } else if area.width >= 45 {
         Some(("󰊢 diff".to_string(), " • Ctrl+H "))
@@ -121,10 +125,7 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
         if inner_area.width >= min_tabs_w + info_len {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(min_tabs_w),
-                    Constraint::Length(info_len),
-                ])
+                .constraints([Constraint::Min(min_tabs_w), Constraint::Length(info_len)])
                 .split(inner_area);
 
             let tabs = Tabs::new(titles)
@@ -143,10 +144,7 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
                     repo_str,
                     Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    help_str,
-                    Style::default().fg(pal.subtext0),
-                ),
+                Span::styled(help_str, Style::default().fg(pal.subtext0)),
             ]))
             .alignment(ratatui::layout::Alignment::Right);
             f.render_widget(info_p, chunks[1]);
@@ -289,28 +287,30 @@ fn render_git_diff_view(f: &mut Frame, app: &mut App, list_state: &mut ListState
         let empty_lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("   ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("Repository: {}", repo_name), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "   ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("Repository: {}", repo_name),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("  󰄬 Clean working tree — no uncommitted changes detected.", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from(Span::styled("    There are no modified files or staged diffs in this repository.", Style::default().fg(Color::DarkGray))),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  • To interact with AI agents: ", Style::default().fg(Color::Yellow)),
-                Span::raw("Switch to tab "),
-                Span::styled("[1] Agents ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::raw("(or use mouse / Ctrl+T)"),
-            ]),
-            Line::from(vec![
-                Span::styled("  • To view demo data: ", Style::default().fg(Color::Yellow)),
-                Span::raw("Run Weavers with "),
-                Span::styled("--demo", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled("  Any code changes will automatically appear here in real-time.", Style::default().fg(Color::DarkGray))),
+            Line::from(vec![Span::styled(
+                "  󰄬 Clean working tree — no uncommitted changes detected.",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(Span::styled(
+                "    There are no modified files or staged diffs in this repository.",
+                Style::default().fg(Color::DarkGray),
+            )),
         ];
 
         let block = Block::default()
@@ -318,8 +318,10 @@ fn render_git_diff_view(f: &mut Frame, app: &mut App, list_state: &mut ListState
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(
-                "  WEAVERS • CLEAN WORKING TREE ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                "  Clean Working Tree ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
 
         let p = Paragraph::new(empty_lines).block(block);
@@ -385,13 +387,18 @@ fn render_snacks_file_drawer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(prefix, Style::default().fg(Color::Yellow)),
             Span::styled(
                 format!(" {} ", file.status.badge()),
-                Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(badge_fg)
+                    .bg(badge_bg)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
             Span::styled(
                 file_name,
                 if is_selected {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 },
@@ -410,7 +417,10 @@ fn render_snacks_file_drawer(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD))),
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
     );
 
     f.render_widget(list, area);
@@ -446,9 +456,15 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
             }
             CodeLineDisplay::CommentHeader { level, title, .. } => {
                 let (icon, badge_text, border_color, bg_color) = match level {
-                    ComplexityLevel::Forte => ("󰀪", "HIGH", Color::LightRed, Color::Rgb(45, 15, 18)),
-                    ComplexityLevel::Media => ("󰀦", "MEDIUM", Color::Yellow, Color::Rgb(45, 38, 10)),
-                    ComplexityLevel::Curiosidade => ("󰌵", "LOW", Color::LightCyan, Color::Rgb(15, 30, 48)),
+                    ComplexityLevel::Forte => {
+                        ("󰀪", "HIGH", Color::LightRed, Color::Rgb(45, 15, 18))
+                    }
+                    ComplexityLevel::Media => {
+                        ("󰀦", "MEDIUM", Color::Yellow, Color::Rgb(45, 38, 10))
+                    }
+                    ComplexityLevel::Curiosidade => {
+                        ("󰌵", "LOW", Color::LightCyan, Color::Rgb(15, 30, 48))
+                    }
                     ComplexityLevel::Normal => ("󰋼", "LOW", Color::Cyan, Color::Rgb(20, 25, 35)),
                 };
 
@@ -466,13 +482,27 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 let rule = "─".repeat(rule_len);
 
                 let text = Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(border_color).bg(bg_color).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("{} ", display_title), Style::default().fg(Color::White).bg(bg_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        prefix,
+                        Style::default()
+                            .fg(border_color)
+                            .bg(bg_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{} ", display_title),
+                        Style::default()
+                            .fg(Color::White)
+                            .bg(bg_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(rule, Style::default().fg(border_color).bg(bg_color)),
                 ]);
                 items.push(ListItem::new(text));
             }
-            CodeLineDisplay::CommentFooter { level, fix_or_hint, .. } => {
+            CodeLineDisplay::CommentFooter {
+                level, fix_or_hint, ..
+            } => {
                 let (icon, border_color, bg_color) = match level {
                     ComplexityLevel::Forte => ("󰌵", Color::LightRed, Color::Rgb(45, 15, 18)),
                     ComplexityLevel::Media => ("󰌵", Color::Yellow, Color::Rgb(45, 38, 10)),
@@ -494,8 +524,17 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 let rule = "─".repeat(rule_len);
 
                 let text = Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(border_color).bg(bg_color).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("{} ", display_hint), Style::default().fg(border_color).bg(bg_color)),
+                    Span::styled(
+                        prefix,
+                        Style::default()
+                            .fg(border_color)
+                            .bg(bg_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{} ", display_hint),
+                        Style::default().fg(border_color).bg(bg_color),
+                    ),
                     Span::styled(rule, Style::default().fg(border_color).bg(bg_color)),
                 ]);
                 items.push(ListItem::new(text));
@@ -525,19 +564,40 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 let (gutter_border, bg_tint) = if *in_comment_block {
                     match level {
                         ComplexityLevel::Forte => (
-                            Span::styled("    │ ", Style::default().fg(Color::LightRed).bg(Color::Rgb(35, 15, 18)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::LightRed)
+                                    .bg(Color::Rgb(35, 15, 18))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(35, 15, 18)),
                         ),
                         ComplexityLevel::Media => (
-                            Span::styled("    │ ", Style::default().fg(Color::Yellow).bg(Color::Rgb(35, 30, 10)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .bg(Color::Rgb(35, 30, 10))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(35, 30, 10)),
                         ),
                         ComplexityLevel::Curiosidade => (
-                            Span::styled("    │ ", Style::default().fg(Color::LightCyan).bg(Color::Rgb(15, 25, 40)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::LightCyan)
+                                    .bg(Color::Rgb(15, 25, 40))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(15, 25, 40)),
                         ),
                         ComplexityLevel::Normal => (
-                            Span::styled("    │ ", Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 25, 35))),
+                            Span::styled(
+                                "    │ ",
+                                Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 25, 35)),
+                            ),
                             Some(Color::Rgb(20, 25, 35)),
                         ),
                     }
@@ -568,13 +628,17 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 if *has_caveman {
                     spans.push(Span::styled(
                         "  󰀪 [HIGH]",
-                        Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
                 if *has_curiosity {
                     spans.push(Span::styled(
                         "  󰌵 [LOW]",
-                        Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
 
@@ -600,19 +664,40 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 let (margin_border, bg_tint) = if *in_comment_block {
                     match level {
                         ComplexityLevel::Forte => (
-                            Span::styled("    │ ", Style::default().fg(Color::LightRed).bg(Color::Rgb(35, 15, 18)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::LightRed)
+                                    .bg(Color::Rgb(35, 15, 18))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(35, 15, 18)),
                         ),
                         ComplexityLevel::Media => (
-                            Span::styled("    │ ", Style::default().fg(Color::Yellow).bg(Color::Rgb(35, 30, 10)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .bg(Color::Rgb(35, 30, 10))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(35, 30, 10)),
                         ),
                         ComplexityLevel::Curiosidade => (
-                            Span::styled("    │ ", Style::default().fg(Color::LightCyan).bg(Color::Rgb(15, 25, 40)).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "    │ ",
+                                Style::default()
+                                    .fg(Color::LightCyan)
+                                    .bg(Color::Rgb(15, 25, 40))
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Some(Color::Rgb(15, 25, 40)),
                         ),
                         ComplexityLevel::Normal => (
-                            Span::styled("    │ ", Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 25, 35))),
+                            Span::styled(
+                                "    │ ",
+                                Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 25, 35)),
+                            ),
                             Some(Color::Rgb(20, 25, 35)),
                         ),
                     }
@@ -648,13 +733,17 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 if *has_caveman {
                     spans.push(Span::styled(
                         "  󰀪 [HIGH]",
-                        Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
                 if *has_curiosity {
                     spans.push(Span::styled(
                         "  󰌵 [LOW]",
-                        Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
 
@@ -669,7 +758,10 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(border_color))
-                .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD))),
+                .title(Span::styled(
+                    title,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
         )
         .highlight_symbol("▶ ")
         .highlight_style(
@@ -693,17 +785,33 @@ pub fn get_tooltip_rendered_lines(tooltip: &TooltipData, inner_width: usize) -> 
         TooltipKind::Low => ("󰌵 ", Color::LightCyan),
     };
 
-    let summary_chunks = crate::markdown_renderer::wrap_text(&tooltip.summary, avail_w.saturating_sub(4));
+    let summary_chunks =
+        crate::markdown_renderer::wrap_text(&tooltip.summary, avail_w.saturating_sub(4));
     for (idx, chunk) in summary_chunks.into_iter().enumerate() {
         if idx == 0 {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(prefix_color).add_modifier(Modifier::BOLD)),
-                Span::styled(chunk, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", icon),
+                    Style::default()
+                        .fg(prefix_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    chunk,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
         } else {
             lines.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(chunk, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    chunk,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
         }
     }
@@ -731,7 +839,10 @@ pub fn get_tooltip_rendered_lines(tooltip: &TooltipData, inner_width: usize) -> 
 }
 
 /// Calculates floating tooltip geometry (Rect and rendered lines) responsive to screen and content
-pub fn calculate_tooltip_geometry(app: &App, code_area: Rect) -> Option<(Rect, Vec<Line<'static>>)> {
+pub fn calculate_tooltip_geometry(
+    app: &App,
+    code_area: Rect,
+) -> Option<(Rect, Vec<Line<'static>>)> {
     let tooltip = app.get_active_tooltip()?;
 
     let max_allowed_w = code_area.width.saturating_sub(4).max(24);
@@ -826,13 +937,16 @@ fn render_floating_tooltip(f: &mut Frame, app: &App, code_area: Rect) {
     let max_scroll = total_lines.saturating_sub(visible_rows);
     let scroll = app.tooltip_scroll_offset.min(max_scroll);
 
-    let mut bottom_spans = vec![
-        Span::styled(" [Esc/Space/Enter] Close ", Style::default().fg(Color::DarkGray)),
-    ];
+    let mut bottom_spans = vec![Span::styled(
+        " [Esc/Space/Enter] Close ",
+        Style::default().fg(Color::DarkGray),
+    )];
     if is_scrollable {
         bottom_spans.push(Span::styled(
             format!(" [↑/↓ Scroll {}/{}] ", scroll + 1, total_lines),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -844,9 +958,7 @@ fn render_floating_tooltip(f: &mut Frame, app: &App, code_area: Rect) {
             format!(" {} ", tooltip.title),
             Style::default().fg(header_fg).add_modifier(Modifier::BOLD),
         ))
-        .title_bottom(
-            Line::from(bottom_spans).alignment(ratatui::layout::Alignment::Right),
-        );
+        .title_bottom(Line::from(bottom_spans).alignment(ratatui::layout::Alignment::Right));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -862,17 +974,41 @@ fn render_artifacts_view(f: &mut Frame, app: &mut App, area: Rect) {
         let empty_lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("   ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled("No Gemini / Antigravity artifacts found for active session.", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "   ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "No Gemini / Antigravity artifacts found for active session.",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(""),
-            Line::from(Span::styled("  Artifacts are automatically saved by Antigravity in:", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("  ~/.gemini/antigravity-cli/brain/<active_conversation>/*.md", Style::default().fg(Color::Yellow))),
+            Line::from(Span::styled(
+                "  Artifacts are automatically saved by Antigravity in:",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "  ~/.gemini/antigravity-cli/brain/<active_conversation>/*.md",
+                Style::default().fg(Color::Yellow),
+            )),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
-                Span::styled("'r'", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(" to reload artifacts from disk.", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "'r'",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " to reload artifacts from disk.",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
         ];
 
@@ -882,7 +1018,9 @@ fn render_artifacts_view(f: &mut Frame, app: &mut App, area: Rect) {
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(
                 "  HERDR • ARTIFACTS ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
 
         let p = Paragraph::new(empty_lines).block(block);
@@ -948,7 +1086,9 @@ fn render_artifacts_drawer(f: &mut Frame, app: &App, area: Rect) {
 
         let (name_style, badge_style) = if is_selected {
             (
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
                 Style::default().fg(Color::Cyan),
             )
         } else {
@@ -962,7 +1102,10 @@ fn render_artifacts_drawer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(prefix, Style::default().fg(Color::Yellow)),
             Span::styled(icon, Style::default().fg(Color::LightBlue)),
             Span::styled(format!("{:<18}", file_name), name_style),
-            Span::styled(format!("{:>7} ", size_str), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:>7} ", size_str),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(badge, badge_style),
         ]);
 
@@ -975,7 +1118,9 @@ fn render_artifacts_drawer(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let list = List::new(items).block(block);
@@ -1001,13 +1146,19 @@ fn render_artifact_document_view(f: &mut Frame, app: &mut App, area: Rect) {
 
     let artifact = &mut app.artifacts[app.selected_artifact_idx];
     if artifact.last_rendered_width != doc_width && doc_width >= 10 {
-        artifact.rendered_lines = crate::markdown_renderer::parse_markdown_with_width(&artifact.raw_content, doc_width);
+        artifact.rendered_lines =
+            crate::markdown_renderer::parse_markdown_with_width(&artifact.raw_content, doc_width);
         artifact.last_rendered_width = doc_width;
     }
 
     let total_lines = artifact.rendered_lines.len();
     let scroll_info = if app.artifact_scroll_offset > 0 {
-        format!(" • L: {}/{} [Scroll +{}]", app.artifact_scroll_offset + 1, total_lines, app.artifact_scroll_offset)
+        format!(
+            " • L: {}/{} [Scroll +{}]",
+            app.artifact_scroll_offset + 1,
+            total_lines,
+            app.artifact_scroll_offset
+        )
     } else {
         format!(" • {} lines", total_lines)
     };
@@ -1021,15 +1172,15 @@ fn render_artifact_document_view(f: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
         ))
         .title(
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", path_display),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])
+            Line::from(vec![Span::styled(
+                format!(" {} ", path_display),
+                Style::default().fg(Color::DarkGray),
+            )])
             .alignment(ratatui::layout::Alignment::Right),
         );
 
@@ -1049,160 +1200,266 @@ fn render_help_modal(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled("󰌌 GLOBAL NAVIGATION & SHORTCUTS", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "󰌌 GLOBAL NAVIGATION & SHORTCUTS",
+            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+        )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
-            Span::styled("  Mouse Click    ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Click    ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Click tabs at top ([1] Agents / [2] Git Diff / [3] Artifacts)"),
         ]),
         Line::from(vec![
-            Span::styled("  1 / F1         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  1 / F1         ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Switch to [1] Agents"),
         ]),
         Line::from(vec![
-            Span::styled("  2 / F2         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  2 / F2         ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Switch to [2] Git Diff"),
         ]),
         Line::from(vec![
-            Span::styled("  3 / F3         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  3 / F3         ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Switch to [3] Artifacts (when available)"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+T         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+T         ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Cycle between active tabs"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+A         ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+A         ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Switch AI Model / Agent (choose from 17 supported agents)"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+S         ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Copy Review AI output to Primary AI for validation"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+H / ?     ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+H / ?     ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle this help menu"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+Q / q     ", Style::default().fg(pal.red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+Q / q     ",
+                Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Quit Herdr Interactive Diff"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("󰚩 TAB 1: AI AGENTS TERMINAL", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "󰚩 TAB 1: AI AGENTS TERMINAL",
+            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+        )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
-            Span::styled("  Ctrl+R         ", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+R         ",
+                Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle Review AI split view (50/50 split) / Close Review AI"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+S         ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Copy Review AI output to Primary AI (Anti-overengineering validation)"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+O / Ctrl+W", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+O / Ctrl+W",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Switch keyboard focus between Primary and Review AI panels"),
         ]),
         Line::from(vec![
-            Span::styled("  Mouse Click    ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Click    ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Focus clicked AI panel (left = Primary, right = Review)"),
         ]),
         Line::from(vec![
-            Span::styled("  Mouse Scroll   ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Scroll   ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Scroll up/down in active terminal scrollback history"),
         ]),
         Line::from(vec![
-            Span::styled("  Mouse Drag     ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Drag     ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Native terminal text selection (Cmd+C to copy)"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+V         ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+V         ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Paste text from system clipboard into focused AI terminal"),
         ]),
         Line::from(vec![
-            Span::styled("  Tab            ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Tab            ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Sent directly to AI CLI for autocomplete (never captured)"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("󰊢 TAB 2: GIT DIFF & REVIEW COMMENTS", Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "󰊢 TAB 2: GIT DIFF & REVIEW COMMENTS",
+            Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
+        )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
-            Span::styled("  Mouse Click    ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Click    ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Click file in drawer to inspect, or click line for review comments"),
         ]),
         Line::from(vec![
-            Span::styled("  Mouse Drag     ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Drag     ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Select code block to copy to system clipboard"),
         ]),
         Line::from(vec![
-            Span::styled("  Cmd+C / Ctrl+C ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Cmd+C / Ctrl+C ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Copy current selection or line to system clipboard (pbcopy)"),
         ]),
         Line::from(vec![
-            Span::styled("  ?              ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  ?              ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Ask focused AI a question about selected diff hunk"),
         ]),
         Line::from(vec![
-            Span::styled("  j / k / ↑ / ↓  ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  j / k / ↑ / ↓  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Navigate files (in drawer) or lines (in code viewer)"),
         ]),
         Line::from(vec![
-            Span::styled("  f              ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  f              ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle between 'Diff Only' and 'Full File' view mode"),
         ]),
         Line::from(vec![
-            Span::styled("  e / E          ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  e / E          ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle file tree drawer"),
         ]),
         Line::from(vec![
-            Span::styled("  Space / Enter  ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Space / Enter  ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle floating review tooltip (Caveman / Insight)"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+S         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ctrl+S         ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Send current review/diff to Primary AI for validation"),
         ]),
         Line::from(vec![
-            Span::styled("  r / F5         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  r / F5         ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Reload Git Diff from disk"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("󰈙 TAB 3: WORKSPACE & AI ARTIFACTS", Style::default().fg(pal.teal).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "󰈙 TAB 3: WORKSPACE & AI ARTIFACTS",
+            Style::default().fg(pal.teal).add_modifier(Modifier::BOLD),
+        )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
-            Span::styled("  Mouse Click    ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Click    ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Click artifact in drawer to open, click document to scroll"),
         ]),
         Line::from(vec![
-            Span::styled("  Mouse Drag     ", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Mouse Drag     ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Select document text to copy to system clipboard"),
         ]),
         Line::from(vec![
-            Span::styled("  j / k / ↑ / ↓  ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  j / k / ↑ / ↓  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Navigate artifacts or scroll document"),
         ]),
         Line::from(vec![
-            Span::styled("  Enter / l / →  ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Enter / l / →  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Focus document reading view"),
         ]),
         Line::from(vec![
-            Span::styled("  Esc / h / ←    ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Esc / h / ←    ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Return focus to artifact drawer"),
         ]),
         Line::from(vec![
-            Span::styled("  r / F5         ", Style::default().fg(pal.green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  r / F5         ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Reload artifacts from workspace, Herdr state, and AI sessions"),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[Esc / Enter / Ctrl+H] ", Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[Esc / Enter / Ctrl+H] ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Close help menu", Style::default().fg(pal.subtext0)),
         ]),
     ];
@@ -1210,12 +1467,19 @@ fn render_help_modal(f: &mut Frame, app: &App) {
     let total_lines = lines.len();
     let scroll_offset = app.help_scroll_offset;
     let scroll_info = if total_lines > 0 {
-        format!(" • [Line {}/{}] [j/k/↑/↓: Scroll]", scroll_offset.min(total_lines) + 1, total_lines)
+        format!(
+            " • [Line {}/{}] [j/k/↑/↓: Scroll]",
+            scroll_offset.min(total_lines) + 1,
+            total_lines
+        )
     } else {
         String::new()
     };
 
-    let title = format!(" 󰋖 HERDR INTERACTIVE DIFF • KEYBINDINGS GUIDE{} ", scroll_info);
+    let title = format!(
+        " 󰋖 HERDR INTERACTIVE DIFF • KEYBINDINGS GUIDE{} ",
+        scroll_info
+    );
 
     let modal = Paragraph::new(lines)
         .scroll((scroll_offset as u16, 0))
@@ -1337,12 +1601,10 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         ))
         .title(
-            Line::from(vec![
-                Span::styled(
-                    "[Enter] Select • [Esc] Close ",
-                    Style::default().fg(pal.overlay0),
-                ),
-            ])
+            Line::from(vec![Span::styled(
+                "[Enter] Select • [Esc] Close ",
+                Style::default().fg(pal.overlay0),
+            )])
             .alignment(ratatui::layout::Alignment::Right),
         );
 
@@ -1364,20 +1626,32 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
     // Target switcher row
     let is_primary = app.agent_picker_target == crate::app::AgentPickerTarget::Primary;
     let primary_style = if is_primary {
-        Style::default().fg(pal.panel_bg).bg(pal.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(pal.panel_bg)
+            .bg(pal.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(pal.subtext0)
     };
     let review_style = if !is_primary {
-        Style::default().fg(pal.panel_bg).bg(pal.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(pal.panel_bg)
+            .bg(pal.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(pal.subtext0)
     };
 
     let target_line = Line::from(vec![
-        Span::styled(format!(" Primary: {} ", app.config.primary_agent.display_name()), primary_style),
+        Span::styled(
+            format!(" Primary: {} ", app.config.primary_agent.display_name()),
+            primary_style,
+        ),
         Span::raw("  "),
-        Span::styled(format!(" Review: {} ", app.config.review_agent.display_name()), review_style),
+        Span::styled(
+            format!(" Review: {} ", app.config.review_agent.display_name()),
+            review_style,
+        ),
     ]);
     f.render_widget(Paragraph::new(target_line), chunks[0]);
 
@@ -1403,9 +1677,7 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
                     .bg(pal.accent)
                     .add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default()
-                    .fg(pal.accent)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(pal.text)
             };
@@ -1421,9 +1693,9 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::GitDiff;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use crate::git::GitDiff;
 
     #[test]
     fn test_render_top_bar_with_artifacts_and_without() {
@@ -1527,9 +1799,21 @@ mod tests {
 
         let line_0: String = (0..120).map(|x| buffer[(x, 0)].symbol()).collect();
         let line_1: String = (0..120).map(|x| buffer[(x, 1)].symbol()).collect();
-        assert!(!line_0.contains("herdr-interactive-diff"), "Top border (line 0) must not contain repo title: {}", line_0);
-        assert!(line_1.contains("herdr-interactive-diff • my-project"), "Inner line 1 must contain repo info: {}", line_1);
-        assert!(line_1.contains("Ctrl+H for help"), "Inner line 1 must contain Ctrl+H for help: {}", line_1);
+        assert!(
+            !line_0.contains("herdr-interactive-diff"),
+            "Top border (line 0) must not contain repo title: {}",
+            line_0
+        );
+        assert!(
+            line_1.contains("herdr-interactive-diff • my-project"),
+            "Inner line 1 must contain repo info: {}",
+            line_1
+        );
+        assert!(
+            line_1.contains("Ctrl+H for help"),
+            "Inner line 1 must contain Ctrl+H for help: {}",
+            line_1
+        );
     }
 
     #[test]
@@ -1612,7 +1896,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let diff = GitDiff::demo();
-        let mut app = App::new(diff, Some("/Users/kaleb/work/very-long-project-name".to_string()));
+        let mut app = App::new(
+            diff,
+            Some("/Users/kaleb/work/very-long-project-name".to_string()),
+        );
         let dummy_lines = crate::markdown_renderer::parse_markdown_to_lines("# Test Plan");
         app.artifacts.push(crate::markdown_renderer::ArtifactItem {
             file_name: "implementation_plan.md".to_string(),
@@ -1670,8 +1957,14 @@ mod tests {
         assert!(content.contains("╭──"), "Comment box must open with ╭──");
         assert!(content.contains("╰──"), "Comment box must close with ╰──");
         assert!(content.contains("│"), "Comment box must frame lines with │");
-        assert!(content.contains("[HIGH]"), "Comment header must use [HIGH] badge");
-        assert!(!content.contains("HIGH PRIORITY"), "Must not use old HIGH PRIORITY label");
+        assert!(
+            content.contains("[HIGH]"),
+            "Comment header must use [HIGH] badge"
+        );
+        assert!(
+            !content.contains("HIGH PRIORITY"),
+            "Must not use old HIGH PRIORITY label"
+        );
     }
 
     #[test]
@@ -1687,10 +1980,15 @@ mod tests {
         app.diff_pane_focus = DiffPaneFocus::CodeView;
 
         // Position cursor at caveman hunk
-        let caveman_idx = app
-            .code_lines
-            .iter()
-            .position(|l| matches!(l, CodeLineDisplay::DiffLine { has_caveman: true, .. }));
+        let caveman_idx = app.code_lines.iter().position(|l| {
+            matches!(
+                l,
+                CodeLineDisplay::DiffLine {
+                    has_caveman: true,
+                    ..
+                }
+            )
+        });
         assert!(caveman_idx.is_some());
         app.code_cursor_idx = caveman_idx.unwrap();
         app.show_tooltip = true;
@@ -1698,7 +1996,11 @@ mod tests {
         // Verify calculate_tooltip_geometry produces dynamic dimensions > 8 height
         let code_area = Rect::new(34, 3, 86, 57);
         let (rect, lines) = calculate_tooltip_geometry(&app, code_area).unwrap();
-        assert!(rect.height >= 8, "Tooltip height should dynamically grow, got {}", rect.height);
+        assert!(
+            rect.height >= 8,
+            "Tooltip height should dynamically grow, got {}",
+            rect.height
+        );
         assert!(rect.width <= 86, "Tooltip width should fit in code area");
         assert!(!lines.is_empty(), "Tooltip should contain rendered lines");
 
@@ -1713,9 +2015,18 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = format!("{:?}", buffer);
 
-        assert!(content.contains("REVIEW COMMENT"), "Tooltip title must be rendered");
-        assert!(content.contains("PONT NO CHECK"), "Tooltip summary must be rendered");
-        assert!(content.contains("Close"), "Close shortcut hint must be rendered");
+        assert!(
+            content.contains("REVIEW COMMENT"),
+            "Tooltip title must be rendered"
+        );
+        assert!(
+            content.contains("PONT NO CHECK"),
+            "Tooltip summary must be rendered"
+        );
+        assert!(
+            content.contains("Close"),
+            "Close shortcut hint must be rendered"
+        );
     }
 
     #[test]
@@ -1755,7 +2066,7 @@ mod tests {
     fn test_utf8_char_boundary_comment_framing_and_truncate() {
         // String with em-dashes (—), Portuguese accents (ã, é, ç), and emojis (🚀)
         let s = "Refatoração de código — validação com IA e execução de testes 🚀 com sucesso!";
-        
+
         // Truncate at every single character boundary up to length
         for len in 0..=s.chars().count() + 5 {
             let res = truncate_str(s, len);
