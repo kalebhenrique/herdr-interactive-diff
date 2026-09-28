@@ -120,6 +120,7 @@ impl AgentKind {
     }
 
     /// Official Herdr integration authority identifier
+    #[allow(dead_code)]
     pub fn herdr_source(&self) -> &'static str {
         match self {
             AgentKind::Agy => "herdr:antigravity_cli",

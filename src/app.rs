@@ -193,6 +193,11 @@ pub struct App {
     pub last_herdr_snapshot: Option<HerdrReportSnapshot>,
     pub last_herdr_report_time: Option<std::time::Instant>,
 
+    // Throttled cache for background transcript syncing and artifacts
+    pub last_claude_transcript_mtime: Option<std::time::SystemTime>,
+    pub last_claude_transcript_len: u64,
+    pub last_artifacts_check_time: std::time::Instant,
+
     // Herdr Visual Theme & Identity
     pub palette: crate::theme::Palette,
 
@@ -378,6 +383,9 @@ impl App {
             last_herdr_state: Some("idle".to_string()),
             last_herdr_snapshot: None,
             last_herdr_report_time: Some(std::time::Instant::now()),
+            last_claude_transcript_mtime: None,
+            last_claude_transcript_len: 0,
+            last_artifacts_check_time: std::time::Instant::now(),
             palette,
             agent_selector_open: false,
             agent_selector_idx: 0,
@@ -1179,8 +1187,19 @@ impl App {
     pub fn sync_review_to_diff(&mut self) -> bool {
         let review_text = match self.config.review_agent {
             crate::config::AgentKind::Claude => {
-                crate::markdown_renderer::read_latest_claude_session_text(self.repo_path.as_deref())
-                    .or_else(|| self.claude_session.as_ref().map(|s| s.read_screen_text()))
+                match crate::markdown_renderer::read_latest_claude_session_text_if_modified(
+                    self.repo_path.as_deref(),
+                    &mut self.last_claude_transcript_mtime,
+                    &mut self.last_claude_transcript_len,
+                ) {
+                    crate::markdown_renderer::ClaudeTranscriptResult::Unchanged => return false,
+                    crate::markdown_renderer::ClaudeTranscriptResult::Modified(text) => {
+                        text.or_else(|| self.claude_session.as_ref().map(|s| s.read_screen_text()))
+                    }
+                    crate::markdown_renderer::ClaudeTranscriptResult::NoSessionFile => {
+                        self.claude_session.as_ref().map(|s| s.read_screen_text())
+                    }
+                }
             }
             crate::config::AgentKind::Agy => self.agy_session.as_ref().map(|s| s.read_screen_text()),
             _ => self.claude_session.as_ref().map(|s| s.read_screen_text()),
@@ -1443,12 +1462,9 @@ impl App {
         };
 
         let now = std::time::Instant::now();
-        let should_send = match (&self.last_herdr_snapshot, self.last_herdr_report_time) {
-            (Some(last), Some(last_time)) => {
-                // Send if state/agent/session changed, or if 5-second heartbeat has elapsed
-                *last != new_snapshot || now.duration_since(last_time) >= std::time::Duration::from_secs(5)
-            }
-            _ => true,
+        let should_send = match &self.last_herdr_snapshot {
+            Some(last) => *last != new_snapshot,
+            None => true,
         };
 
         if should_send {
@@ -1686,6 +1702,12 @@ impl App {
 
     /// Periodic lightweight check for updated artifacts
     pub fn check_artifacts_update(&mut self) {
+        let is_artifacts_tab = self.active_tab == ActiveTab::Artifacts;
+        if !is_artifacts_tab && self.last_artifacts_check_time.elapsed() < std::time::Duration::from_millis(3000) {
+            return;
+        }
+        self.last_artifacts_check_time = std::time::Instant::now();
+
         let screen_text = self.agy_session.as_ref().map(|s| s.read_screen_text());
         let has_resume_on_screen = screen_text.as_deref().map(|s| s.contains("resume") || s.contains("Resume")).unwrap_or(false);
         let should_detect = self.active_antigravity_conversation_id.is_none()

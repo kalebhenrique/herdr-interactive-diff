@@ -172,6 +172,7 @@ impl HerdrClient {
             "params": {
                 "pane_id": &self.pane_id,
                 "source": "herdr-interactive-diff",
+                "agent": agent_kind.as_str(),
                 "display_agent": agent_kind.as_str(),
                 "state_labels": state_labels,
                 "seq": meta_seq,
@@ -179,14 +180,12 @@ impl HerdrClient {
         });
         let _ = self.tx.send(meta_req);
 
-        let official_source = agent_kind.herdr_source();
-
         // 2. Report active agent status
         let agent_seq = next_seq();
         let mut params = serde_json::json!({
             "pane_id": &self.pane_id,
-            "source": official_source,
-            "agent": agent,
+            "source": "herdr-interactive-diff",
+            "agent": agent_kind.as_str(),
             "state": state.as_str(),
             "seq": agent_seq,
         });
@@ -199,28 +198,11 @@ impl HerdrClient {
         }
 
         let request = serde_json::json!({
-            "id": format!("weavers:report:{}", agent_seq),
+            "id": format!("herdr-diff:report:{}", agent_seq),
             "method": "pane.report_agent",
             "params": params,
         });
         let _ = self.tx.send(request);
-
-        // 3. Report active agent session if known
-        if let Some(sess) = session_id {
-            let sess_seq = next_seq();
-            let session_req = serde_json::json!({
-                "id": format!("weavers:session:{}", sess_seq),
-                "method": "pane.report_agent_session",
-                "params": {
-                    "pane_id": &self.pane_id,
-                    "source": official_source,
-                    "agent": agent,
-                    "agent_session_id": sess,
-                    "seq": sess_seq,
-                }
-            });
-            let _ = self.tx.send(session_req);
-        }
     }
 
     /// Reports Antigravity CLI status to Herdr on the Weavers pane
@@ -240,23 +222,32 @@ impl HerdrClient {
         for agent_name in agents {
             if let Some(agent) = AgentKind::parse(agent_name) {
                 let ag_str = agent.as_str();
-                let sources = [agent.herdr_source(), "weavers", "herdr-interactive-diff"];
-                for source in sources {
-                    let s = next_seq();
-                    let req = serde_json::json!({
-                        "id": format!("weavers:release:{}:{}:{}", ag_str, source, s),
-                        "method": "pane.release_agent",
-                        "params": {
-                            "pane_id": &self.pane_id,
-                            "source": source,
-                            "agent": ag_str,
-                            "seq": s,
-                        }
-                    });
-                    let _ = self.tx.send(req);
-                }
+                let s = next_seq();
+                let req = serde_json::json!({
+                    "id": format!("herdr-diff:release:{}:{}", ag_str, s),
+                    "method": "pane.release_agent",
+                    "params": {
+                        "pane_id": &self.pane_id,
+                        "source": "herdr-interactive-diff",
+                        "agent": ag_str,
+                        "seq": s,
+                    }
+                });
+                let _ = self.tx.send(req);
             }
         }
+
+        let clear_seq = next_seq();
+        let clear_req = serde_json::json!({
+            "id": format!("herdr-diff:clear_authority:{}", clear_seq),
+            "method": "pane.clear_agent_authority",
+            "params": {
+                "pane_id": &self.pane_id,
+                "source": "herdr-interactive-diff",
+                "seq": clear_seq,
+            }
+        });
+        let _ = self.tx.send(clear_req);
     }
 
     /// Cleanly releases registered agent state on Weavers pane when exiting
@@ -559,5 +550,49 @@ mod tests {
     fn test_parse_herdr_working_dir_handles_empty_or_malformed() {
         assert_eq!(super::parse_herdr_working_dir_from_json("{}"), None);
         assert_eq!(super::parse_herdr_working_dir_from_json("invalid json"), None);
+    }
+
+    #[test]
+    fn test_report_active_agent_payloads() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let client = HerdrClient {
+            socket_path: PathBuf::from("/tmp/herdr.sock"),
+            pane_id: "w1:p1".to_string(),
+            tx,
+        };
+        client.report_active_agent("agy", AgentState::Working, Some("Analyzing"), Some("conv-123"), false);
+
+        let meta = rx.recv().expect("meta message");
+        assert_eq!(meta["method"], "pane.report_metadata");
+        assert_eq!(meta["params"]["source"], "herdr-interactive-diff");
+        assert_eq!(meta["params"]["agent"], "agy");
+        assert_eq!(meta["params"]["display_agent"], "agy");
+
+        let agent = rx.recv().expect("agent message");
+        assert_eq!(agent["method"], "pane.report_agent");
+        assert_eq!(agent["params"]["source"], "herdr-interactive-diff");
+        assert_eq!(agent["params"]["agent"], "agy");
+        assert_eq!(agent["params"]["state"], "working");
+        assert_eq!(agent["params"]["agent_session_id"], "conv-123");
+    }
+
+    #[test]
+    fn test_release_agents_payloads() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let client = HerdrClient {
+            socket_path: PathBuf::from("/tmp/herdr.sock"),
+            pane_id: "w1:p1".to_string(),
+            tx,
+        };
+        client.release_agents(&["agy"]);
+
+        let release = rx.recv().expect("release message");
+        assert_eq!(release["method"], "pane.release_agent");
+        assert_eq!(release["params"]["source"], "herdr-interactive-diff");
+        assert_eq!(release["params"]["agent"], "agy");
+
+        let clear = rx.recv().expect("clear authority message");
+        assert_eq!(clear["method"], "pane.clear_agent_authority");
+        assert_eq!(clear["params"]["source"], "herdr-interactive-diff");
     }
 }

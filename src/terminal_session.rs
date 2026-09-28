@@ -180,13 +180,28 @@ impl TerminalSession {
         self.send_bytes(text.as_bytes());
     }
 
+    pub const MAX_PASTE_BYTES: usize = 512 * 1024; // 512 KiB defensive limit to protect PTY buffer
+
+    fn truncate_paste(text: &str) -> &str {
+        if text.len() <= Self::MAX_PASTE_BYTES {
+            text
+        } else {
+            let mut end = Self::MAX_PASTE_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            &text[..end]
+        }
+    }
+
     /// Envia texto como colagem atômica instantânea usando Bracketed Paste Mode (\x1b[200~ ... \x1b[201~\r)
     pub fn paste_command(&self, text: &str) {
         self.scroll_to_bottom();
         if !self.is_alive() {
             return;
         }
-        let safe = text.replace("\x1b[201~", "");
+        let capped = Self::truncate_paste(text);
+        let safe = capped.replace("\x1b[201~", "");
         let payload = format!("\x1b[200~{}\x1b[201~\r", safe);
         self.send_bytes(payload.as_bytes());
     }
@@ -197,7 +212,8 @@ impl TerminalSession {
         if !self.is_alive() {
             return;
         }
-        let safe = text.replace("\x1b[201~", "");
+        let capped = Self::truncate_paste(text);
+        let safe = capped.replace("\x1b[201~", "");
         let payload = format!("\x1b[200~{}\x1b[201~", safe);
         self.send_bytes(payload.as_bytes());
     }
@@ -309,5 +325,15 @@ mod tests {
 
         session.scroll_to_bottom();
         assert_eq!(session.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_truncate_paste_limits_oversized_text() {
+        let short_text = "hello world";
+        assert_eq!(TerminalSession::truncate_paste(short_text), short_text);
+
+        let large_text = "a".repeat(TerminalSession::MAX_PASTE_BYTES + 100);
+        let truncated = TerminalSession::truncate_paste(&large_text);
+        assert_eq!(truncated.len(), TerminalSession::MAX_PASTE_BYTES);
     }
 }

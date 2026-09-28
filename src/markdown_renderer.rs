@@ -240,8 +240,8 @@ pub fn detect_active_claude_session_id(repo_path: Option<&str>) -> Option<String
     jsonl_files.first().map(|(id, _)| id.clone())
 }
 
-/// Lê a última mensagem de texto do assistente (Claude Code) a partir do arquivo .jsonl da sessão ativa
-pub fn read_latest_claude_session_text(repo_path: Option<&str>) -> Option<String> {
+/// Obtém o caminho do arquivo .jsonl da sessão ativa do Claude Code para o repositório atual
+pub fn get_active_claude_session_path(repo_path: Option<&str>) -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let path_str = match repo_path {
         Some(p) => std::fs::canonicalize(p)
@@ -263,11 +263,16 @@ pub fn read_latest_claude_session_text(repo_path: Option<&str>) -> Option<String
 
     let session_id = detect_active_claude_session_id(repo_path)?;
     let jsonl_path = project_dir.join(format!("{}.jsonl", session_id));
-    if !jsonl_path.is_file() {
-        return None;
+    if jsonl_path.is_file() {
+        Some(jsonl_path)
+    } else {
+        None
     }
+}
 
-    let file = fs::File::open(&jsonl_path).ok()?;
+/// Lê a última mensagem de texto do assistente (Claude Code) a partir de um arquivo .jsonl
+pub fn read_claude_transcript_file(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
     use std::io::{BufRead, BufReader};
     let reader = BufReader::new(file);
     let mut last_assistant_text = None;
@@ -300,6 +305,50 @@ pub fn read_latest_claude_session_text(repo_path: Option<&str>) -> Option<String
     }
 
     last_assistant_text
+}
+
+/// Lê a última mensagem de texto do assistente (Claude Code) a partir do arquivo .jsonl da sessão ativa
+pub fn read_latest_claude_session_text(repo_path: Option<&str>) -> Option<String> {
+    let jsonl_path = get_active_claude_session_path(repo_path)?;
+    read_claude_transcript_file(&jsonl_path)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ClaudeTranscriptResult {
+    /// File exists and was modified since last check (or first read)
+    Modified(Option<String>),
+    /// File exists and has NOT changed on disk
+    Unchanged,
+    /// No Claude session jsonl file found on disk
+    NoSessionFile,
+}
+
+/// Lê a última mensagem do Claude Code apenas se o arquivo tiver sido modificado no disco desde a última checagem.
+/// Evita I/O e parsing redundantes quando a sessão estiver ociosa.
+pub fn read_latest_claude_session_text_if_modified(
+    repo_path: Option<&str>,
+    cached_mtime: &mut Option<SystemTime>,
+    cached_len: &mut u64,
+) -> ClaudeTranscriptResult {
+    let path = match get_active_claude_session_path(repo_path) {
+        Some(p) => p,
+        None => return ClaudeTranscriptResult::NoSessionFile,
+    };
+    let meta = match fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return ClaudeTranscriptResult::NoSessionFile,
+    };
+    let mtime = meta.modified().ok();
+    let len = meta.len();
+
+    if *cached_mtime == mtime && *cached_len == len {
+        return ClaudeTranscriptResult::Unchanged;
+    }
+
+    *cached_mtime = mtime;
+    *cached_len = len;
+
+    ClaudeTranscriptResult::Modified(read_claude_transcript_file(&path))
 }
 
 /// Descobre artefatos (.md) de uma conversa específica do Antigravity CLI
@@ -1223,5 +1272,26 @@ println!("hello world");
     fn test_detect_active_claude_session_id_with_nonexistent_dir() {
         let res = detect_active_claude_session_id(Some("/nonexistent/path/that/does/not/exist"));
         assert_eq!(res, None);
+    }
+
+    #[test]
+    fn test_read_claude_transcript_file_parses_assistant_text() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("test_claude_transcript_{}.jsonl", std::process::id()));
+        let jsonl_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is my review."}]}}
+"#;
+        std::fs::write(&test_file, jsonl_content).unwrap();
+        let parsed = read_claude_transcript_file(&test_file);
+        let _ = std::fs::remove_file(&test_file);
+        assert_eq!(parsed, Some("Here is my review.".to_string()));
+    }
+
+    #[test]
+    fn test_read_latest_claude_session_text_if_modified_nonexistent() {
+        let mut mtime = None;
+        let mut len = 0;
+        let res = read_latest_claude_session_text_if_modified(Some("/nonexistent/repo"), &mut mtime, &mut len);
+        assert_eq!(res, ClaudeTranscriptResult::NoSessionFile);
     }
 }

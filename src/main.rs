@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
         let initial_raw = app.diff.raw.clone();
         tokio::spawn(async move {
             let mut last_raw = initial_raw;
-            let mut interval = tokio::time::interval(Duration::from_millis(1500));
+            let mut interval = tokio::time::interval(Duration::from_millis(2000));
             interval.tick().await;
 
             loop {
@@ -282,7 +282,8 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // 4. Loop Principal de Eventos e Renderização
-    let mut last_sync_tick = std::time::Instant::now();
+    let mut last_herdr_tick = std::time::Instant::now();
+    let mut last_review_sync_tick = std::time::Instant::now();
     let mut last_theme_mtime = None;
     while !app.should_quit {
         list_state.select(Some(app.code_cursor_idx));
@@ -298,12 +299,17 @@ async fn main() -> Result<()> {
         })?;
         app.code_scroll_offset = list_state.offset();
 
-        // Sincroniza estado do Herdr, comentários do Claude e artefatos periodicamente
-        if last_sync_tick.elapsed() >= Duration::from_millis(150) {
+        // Sincroniza estado do Herdr periodicamente (a cada 1s, com deduplicação de estado)
+        if last_herdr_tick.elapsed() >= Duration::from_millis(1000) {
             app.update_herdr_state();
+            last_herdr_tick = std::time::Instant::now();
+        }
+
+        // Sincroniza comentários de review e artefatos de forma otimizada (a cada 2s com mtime check)
+        if last_review_sync_tick.elapsed() >= Duration::from_millis(2000) {
             app.sync_claude_review_to_diff();
             app.check_artifacts_update();
-            last_sync_tick = std::time::Instant::now();
+            last_review_sync_tick = std::time::Instant::now();
         }
 
         // Processa mensagens assíncronas do canal
@@ -801,6 +807,9 @@ async fn main() -> Result<()> {
                             }
                             if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V')) {
                                 if let Some(clip) = crate::clipboard::get_clipboard_text() {
+                                    if clip.len() > crate::terminal_session::TerminalSession::MAX_PASTE_BYTES {
+                                        app.status_message = "Pasted text truncated to 512 KB safeguard.".to_string();
+                                    }
                                     app.paste_text_to_agent(&clip);
                                     continue;
                                 }
