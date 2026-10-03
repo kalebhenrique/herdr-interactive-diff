@@ -233,6 +233,8 @@ pub struct PluginConfig {
     pub placement: DiffPlacement,
 }
 
+#[deprecated(note = "Use PluginConfig instead")]
+#[allow(dead_code)]
 pub type WeaversConfig = PluginConfig;
 
 impl Default for PluginConfig {
@@ -253,35 +255,35 @@ pub fn get_config_path() -> PathBuf {
     if let Ok(custom) = std::env::var("HERDR_INTERACTIVE_DIFF_CONFIG_PATH") {
         return PathBuf::from(custom);
     }
-    if let Ok(custom) = std::env::var("WEAVERS_CONFIG_PATH") {
-        return PathBuf::from(custom);
-    }
     if let Ok(config_dir) = std::env::var("HERDR_PLUGIN_CONFIG_DIR") {
         return PathBuf::from(config_dir).join("config.json");
     }
     if let Ok(home) = std::env::var("HOME") {
-        // Herdr standard plugin config directory
-        let herdr_plugin_cfg = PathBuf::from(&home)
-            .join(".config/herdr/plugins/config/herdr-interactive-diff/config.json");
+        // 1. Herdr standard plugin config directory (~/.config/herdr/plugins/config/herdr-interactive-diff/config.json)
+        let herdr_plugin_dir = PathBuf::from(&home)
+            .join(".config/herdr/plugins/config/herdr-interactive-diff");
+        let herdr_plugin_cfg = herdr_plugin_dir.join("config.json");
         if herdr_plugin_cfg.exists() {
             return herdr_plugin_cfg;
         }
 
-        let p = PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json");
-        if p.exists() {
-            return p;
-        }
-        let legacy = PathBuf::from(&home).join(".config/weavers/config.json");
-        if legacy.exists() {
-            return legacy;
+        // 2. Standard user config (~/.config/herdr-interactive-diff/config.json)
+        let standard_cfg = PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json");
+        if standard_cfg.exists() {
+            return standard_cfg;
         }
 
-        let herdr_plugin_dir = PathBuf::from(&home)
-            .join(".config/herdr/plugins/config/herdr-interactive-diff");
+        // 3. If Herdr plugin directory exists, prefer saving there
         if herdr_plugin_dir.exists() {
             return herdr_plugin_cfg;
         }
-        return legacy;
+
+        // 4. Default for standalone or new installations: ~/.config/herdr-interactive-diff/config.json
+        return standard_cfg;
+    }
+    // Deprecated fallback environment variable
+    if let Ok(custom) = std::env::var("WEAVERS_CONFIG_PATH") {
+        return PathBuf::from(custom);
     }
     PathBuf::from(".herdr-interactive-diff/config.json")
 }
@@ -299,12 +301,12 @@ pub fn load_config() -> PluginConfig {
             return cfg;
         }
     }
-    // Fallback: check mirror paths if primary had invalid or missing content
+    // Fallback: check mirror paths or legacy weavers location for seamless migration
     if let Ok(home) = std::env::var("HOME") {
         let mirrors = [
             PathBuf::from(&home).join(".config/herdr/plugins/config/herdr-interactive-diff/config.json"),
-            PathBuf::from(&home).join(".config/weavers/config.json"),
             PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json"),
+            PathBuf::from(&home).join(".config/weavers/config.json"), // legacy migration fallback only
         ];
         for mirror in mirrors {
             if mirror != path {
@@ -337,7 +339,6 @@ pub fn save_config(cfg: &PluginConfig) -> Result<()> {
     if let Ok(home) = std::env::var("HOME") {
         let mirrors = [
             PathBuf::from(&home).join(".config/herdr/plugins/config/herdr-interactive-diff/config.json"),
-            PathBuf::from(&home).join(".config/weavers/config.json"),
             PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json"),
         ];
         for mirror in mirrors {

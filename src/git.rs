@@ -486,7 +486,7 @@ pub fn process_events(events: Vec<Event>) -> Vec<ProcessedEvent> {
             f3.full_content = Some(r#"// src/version.rs
 pub const APP_VERSION: &str = "0.2.0";
 pub const BUILD_DATE: &str = "2026-09-22";
-pub const SYSTEM_TAG: &str = "weavers-augmented";
+pub const SYSTEM_TAG: &str = "herdr-diff-augmented";
 "#.to_string());
         }
 

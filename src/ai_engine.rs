@@ -112,7 +112,7 @@ pub fn extract_json_payload(raw: &str) -> &str {
 #[allow(dead_code)]
 pub async fn classify_diff_with_antigravity(diff_summary: &str) -> Result<ClassificationResponse> {
     let system_instructions = r#"
-You are the Weavers classification engine for Git Diffs.
+You are the Herdr Interactive Diff classification engine for Git Diffs.
 Analyze each HUNK in the provided diff and classify it into exactly one of the 4 levels:
 - "forte": Critical bugs, severe anti-patterns, or major architectural regressions. Provide "caveman_msg" (short, direct, caveman style, no fluff) and "explanation" (detailed technical explanation).
 - "media": Attention points that don't break code immediately, but warrant review.
@@ -161,7 +161,7 @@ Return STRICTLY a JSON object matching this schema (no introductory or concludin
 #[allow(dead_code)]
 pub async fn ask_antigravity(hunk_context: &str, user_question: &str) -> Result<String> {
     let prompt = format!(
-        "You are Weavers AI. The developer is reviewing the following diff and has a question:\n\n```diff\n{}\n```\n\nDeveloper question: {}\n\nAnswer concisely, directly, and practically in English:",
+        "You are Herdr Interactive Diff AI. The developer is reviewing the following diff and has a question:\n\n```diff\n{}\n```\n\nDeveloper question: {}\n\nAnswer concisely, directly, and practically in English:",
         hunk_context, user_question
     );
 
@@ -203,7 +203,7 @@ CAVEMAN STYLE RULES:
   Why: Core reason in 1 sharp sentence.
   Fix: Exact correction and immediate replacement code.
 
-AT THE END OF YOUR RESPONSE, YOU MUST INCLUDE THIS JSON BLOCK FOR WEAVERS TO ANNOTATE THE DIFF:
+AT THE END OF YOUR RESPONSE, YOU MUST INCLUDE THIS JSON BLOCK TO ANNOTATE THE DIFF:
 ```json
 {{
   "classifications": [

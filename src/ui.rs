@@ -12,12 +12,12 @@ use crate::app::{
 };
 use crate::git::LineOrigin;
 
-/// Renders the complete Weavers interface in English with Nerd Fonts
+/// Renders the complete Herdr Interactive Diff interface in English with Nerd Fonts
 pub fn render_ui(f: &mut Frame, app: &mut App, list_state: &mut ListState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Top Bar (Tabs + weavers repo info on right)
+            Constraint::Length(3), // Top Bar (Tabs + repo info on right)
             Constraint::Min(5),    // Main content (Git Diff or Artifacts)
         ])
         .split(f.area());
@@ -1461,7 +1461,7 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
                     " [Tab] ",
                     Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("Role ", Style::default().fg(pal.subtext0)),
+                Span::styled("Switch Role ", Style::default().fg(pal.subtext0)),
                 Span::styled("• ", Style::default().fg(pal.overlay0)),
                 Span::styled(
                     "[Enter] ",

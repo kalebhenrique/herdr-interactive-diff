@@ -290,14 +290,14 @@ mod tests {
 
     #[test]
     fn test_spawn_echo_pty() {
-        let session = TerminalSession::spawn("sh", &["-c", "echo weavers_pty_test"], "EchoTest", 24, 80, None);
+        let session = TerminalSession::spawn("sh", &["-c", "echo diff_pty_test"], "EchoTest", 24, 80, None);
         assert!(session.is_ok(), "Deve spawnar processo no PTY com sucesso");
 
         let session = session.unwrap();
         let mut found = false;
         for _ in 0..40 {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            if session.read_screen_text().contains("weavers_pty_test") {
+            if session.read_screen_text().contains("diff_pty_test") {
                 found = true;
                 break;
             }

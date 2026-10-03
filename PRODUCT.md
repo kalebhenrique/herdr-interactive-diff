@@ -4,7 +4,7 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Project
 
-Weavers is a Rust TUI (ratatui + crossterm) that acts as an AI-augmented Git diff viewer and dual-agent pair-programming workspace. It embeds two AI coding agents (Antigravity CLI `agy` and Claude Code `claude`) in PTY-backed terminal panes, triggers automated reviews, and annotates diff hunks with AI-generated classifications.
+Herdr Interactive Diff (`herdr-interactive-diff`) is a Rust TUI (ratatui + crossterm) that acts as an AI-augmented Git diff viewer and dual-agent pair-programming plugin for Herdr. It connects to Herdr's IPC socket to interact with AI coding agents (Antigravity CLI `agy`, Claude Code `claude`, and 15+ others) in split panes, triggers automated reviews, and annotates diff hunks with AI-generated classifications.
 
 ## Commands
 
@@ -60,7 +60,7 @@ Discovers Antigravity session artifacts (.md) from `~/.gemini/antigravity-cli/br
 
 ### Session persistence (session_store.rs)
 
-Reviews and pointwise questions (`?` key) persist per-repo as JSON under `~/.config/weavers/sessions/` (override with `WEAVERS_SESSIONS_DIR`). Timestamps are hand-rolled (`current_timestamp_str`) — no chrono dep; don't casually introduce one.
+Reviews and pointwise questions (`?` key) persist per-repo as JSON under `~/.config/herdr-interactive-diff/sessions/` (or Herdr plugin state dir). Timestamps are hand-rolled (`current_timestamp_str`) — no chrono dep; don't casually introduce one.
 
 ## Conventions
 

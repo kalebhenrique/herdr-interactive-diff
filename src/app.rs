@@ -135,7 +135,7 @@ pub struct App {
     pub active_tab: ActiveTab,
 
     // Decoupled Herdr Agents & Configuration
-    pub config: crate::config::WeaversConfig,
+    pub config: crate::config::PluginConfig,
     pub detected_agents: Vec<crate::herdr::DetectedAgent>,
     pub primary_pane_id: Option<String>,
     pub review_pane_id: Option<String>,
@@ -237,7 +237,7 @@ impl App {
         Self::new_with_config(diff, repo_path, crate::config::load_config())
     }
 
-    pub fn new_with_config(diff: GitDiff, repo_path: Option<String>, config: crate::config::WeaversConfig) -> Self {
+    pub fn new_with_config(diff: GitDiff, repo_path: Option<String>, config: crate::config::PluginConfig) -> Self {
         let herdr = if cfg!(test) {
             None
         } else {
@@ -1966,7 +1966,7 @@ mod tests {
     #[test]
     fn test_app_new_with_claude_primary() {
         let diff = GitDiff::demo();
-        let cfg = crate::config::WeaversConfig {
+        let cfg = crate::config::PluginConfig {
             primary_agent: crate::config::AgentKind::Claude,
             review_agent: crate::config::AgentKind::Agy,
             primary_pane_id: Some("w1:p1".to_string()),

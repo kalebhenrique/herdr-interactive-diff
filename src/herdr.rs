@@ -255,13 +255,13 @@ impl HerdrClient {
         let _ = self.tx.send(request);
     }
 
-    /// Reports Antigravity CLI status to Herdr on the Weavers pane
+    /// Reports Antigravity CLI status to Herdr on the Herdr Interactive Diff pane
     #[allow(dead_code)]
     pub fn report_agy(&self, state: AgentState, message: Option<&str>, session_id: Option<&str>, is_reviewer: bool) {
         self.report_active_agent("agy", state, message, session_id, is_reviewer);
     }
 
-    /// Reports Claude Code status to Herdr on the Weavers pane
+    /// Reports Claude Code status to Herdr on the Herdr Interactive Diff pane
     #[allow(dead_code)]
     pub fn report_claude(&self, state: AgentState, message: Option<&str>, session_id: Option<&str>, is_reviewer: bool) {
         self.report_active_agent("claude", state, message, session_id, is_reviewer);
@@ -300,7 +300,7 @@ impl HerdrClient {
         let _ = self.tx.send(clear_req);
     }
 
-    /// Cleanly releases registered agent state on Weavers pane when exiting
+    /// Cleanly releases registered agent state on Herdr Interactive Diff pane when exiting
     pub fn release_all(&mut self) {
         self.release_agents(&["agy", "claude"]);
     }
@@ -602,7 +602,7 @@ pub fn send_herdr_rpc(socket_path: &Path, method: &str, params: serde_json::Valu
 /// Discovers the current pane ID by inspecting Herdr session snapshot
 fn discover_pane_id(socket_path: &Path) -> Option<String> {
     let snap_req = serde_json::json!({
-        "id": "weavers:discover_pane",
+        "id": "herdr-diff:discover_pane",
         "method": "session.snapshot",
         "params": {}
     });
@@ -617,7 +617,7 @@ fn discover_pane_id(socket_path: &Path) -> Option<String> {
     for p in panes {
         if let Some(pane_id_val) = p.get("pane_id").and_then(|v| v.as_str()) {
             let proc_req = serde_json::json!({
-                "id": "weavers:pane_proc",
+                "id": "herdr-diff:pane_proc",
                 "method": "pane.process_info",
                 "params": { "pane_id": pane_id_val }
             });

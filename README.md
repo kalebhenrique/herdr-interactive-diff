@@ -109,7 +109,7 @@ Add these keybindings to `~/.config/herdr/config.toml` for seamless terminal orc
 
 ## ⚙️ Configuration & CLI
 
-Configuration is stored in `~/.config/weavers/config.json`. You can manage settings via CLI:
+Configuration is stored in `~/.config/herdr-interactive-diff/config.json` (or `~/.config/herdr/plugins/config/herdr-interactive-diff/config.json` when running as a Herdr plugin). You can manage settings via CLI:
 
 ```bash
 # Set default placement for <prefix>+f (split on the left or dedicated tab)
