@@ -5,8 +5,11 @@ use crate::git::GitDiff;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComplexityLevel {
+    #[serde(alias = "high", alias = "critical")]
     Forte,
+    #[serde(alias = "medium", alias = "warn")]
     Media,
+    #[serde(alias = "curiosity", alias = "low", alias = "info")]
     Curiosidade,
     Normal,
 }
@@ -106,6 +109,7 @@ pub fn extract_json_payload(raw: &str) -> &str {
 }
 
 /// Invoca o Antigravity CLI (`agy -p`) em background para classificar o diff
+#[allow(dead_code)]
 pub async fn classify_diff_with_antigravity(diff_summary: &str) -> Result<ClassificationResponse> {
     let system_instructions = r#"
 You are the Weavers classification engine for Git Diffs.
@@ -465,6 +469,41 @@ mod tests {
         assert_eq!(parsed.classifications[0].level, ComplexityLevel::Forte);
         assert_eq!(parsed.classifications[0].caveman_msg.as_deref(), Some("BAD PTR!"));
         assert_eq!(parsed.classifications[1].level, ComplexityLevel::Curiosidade);
+    }
+
+    #[test]
+    fn test_deserialize_classification_response_with_english_levels() {
+        let json_data = r#"{
+            "classifications": [
+                {
+                    "hunk_id": "file.rs#0",
+                    "level": "high",
+                    "caveman_msg": "CRITICAL FLAW"
+                },
+                {
+                    "hunk_id": "file.rs#1",
+                    "level": "medium",
+                    "explanation": "Suboptimal lock"
+                },
+                {
+                    "hunk_id": "file.rs#2",
+                    "level": "curiosity",
+                    "hint": "Use fold instead"
+                },
+                {
+                    "hunk_id": "file.rs#3",
+                    "level": "low",
+                    "hint": "Minor tip"
+                }
+            ]
+        }"#;
+
+        let parsed: ClassificationResponse = serde_json::from_str(json_data).unwrap();
+        assert_eq!(parsed.classifications.len(), 4);
+        assert_eq!(parsed.classifications[0].level, ComplexityLevel::Forte);
+        assert_eq!(parsed.classifications[1].level, ComplexityLevel::Media);
+        assert_eq!(parsed.classifications[2].level, ComplexityLevel::Curiosidade);
+        assert_eq!(parsed.classifications[3].level, ComplexityLevel::Curiosidade);
     }
 
     #[test]

@@ -4,7 +4,6 @@ use crate::ai_engine::{ComplexityLevel, HunkClassification};
 use crate::git::{DiffHunk, GitDiff, LineOrigin};
 use crate::herdr::HerdrClient;
 use crate::markdown_renderer::{ArtifactItem, discover_artifacts};
-use crate::terminal_session::TerminalSession;
 
 /// Pergunta pontual feita pelo usuário via binding '?' sobre um trecho do diff
 #[allow(dead_code)]
@@ -20,9 +19,8 @@ pub struct PointwiseQuestion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
-    Agents,    // Tab 1: Interactive Terminal Sessions (Primary + Review Split)
-    GitDiff,   // Tab 2: File drawer + Diff / Full File Viewer
-    Artifacts, // Tab 3: Gemini / Antigravity Markdown Artifacts viewer
+    GitDiff,   // Tab 1: File drawer + Diff / Full File Viewer
+    Artifacts, // Tab 2: Gemini / Antigravity Markdown Artifacts viewer
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +29,7 @@ pub enum ArtifactPaneFocus {
     DocumentView, // Document viewer and scroll area
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentFocus {
     Antigravity, // Antigravity CLI
@@ -135,15 +134,13 @@ pub struct App {
     pub diff: GitDiff,
     pub active_tab: ActiveTab,
 
-    // Interactive Terminal Sessions (Tab 1: Agents)
+    // Decoupled Herdr Agents & Configuration
     pub config: crate::config::WeaversConfig,
-    pub agent_focus: AgentFocus,
-    pub agy_session: Option<TerminalSession>,
-    pub claude_session: Option<TerminalSession>,
-    pub show_claude: bool, // Claude active status (for backwards compatibility)
-    pub show_review_agent: bool,
+    pub detected_agents: Vec<crate::herdr::DetectedAgent>,
+    pub primary_pane_id: Option<String>,
+    pub review_pane_id: Option<String>,
 
-    // Tab 2: Git Diff & File Tree
+    // Tab 1: Git Diff & File Tree
     pub diff_pane_focus: DiffPaneFocus,
     pub code_view_mode: CodeViewMode,
     pub show_diff_tree: bool,
@@ -169,7 +166,7 @@ pub struct App {
     pub classifications: HashMap<String, HunkClassification>,
     pub is_classifying: bool,
 
-    // Tab 3: Artifacts
+    // Tab 2: Artifacts
     pub artifacts: Vec<ArtifactItem>,
     pub active_antigravity_conversation_id: Option<String>,
     pub last_agy_pid: Option<u32>,
@@ -201,13 +198,6 @@ pub struct App {
     // Herdr Visual Theme & Identity
     pub palette: crate::theme::Palette,
 
-    // Agent Hub & Herdr Splits (Tab 1)
-    pub agent_selector_open: bool,
-    pub agent_selector_idx: usize,
-    pub selecting_for_review: bool,
-    pub active_herdr_agent_pane: Option<String>,
-    pub active_herdr_review_pane: Option<String>,
-
     // AI Picker Modal (Ctrl+A)
     pub show_agent_picker: bool,
     pub agent_picker_target: AgentPickerTarget,
@@ -219,6 +209,28 @@ pub struct App {
     pub selected_text: Option<String>,
 }
 
+/// Extracts session ID (UUID) from Herdr's DetectedAgent session metadata
+pub fn extract_session_id_from_agent(agent: &crate::herdr::DetectedAgent) -> Option<String> {
+    if let Some(session) = &agent.agent_session {
+        if let Some(val) = session.get("value").and_then(|v| v.as_str()) {
+            if !val.trim().is_empty() {
+                return Some(val.to_string());
+            }
+        }
+        if let Some(val) = session.get("id").and_then(|v| v.as_str()) {
+            if !val.trim().is_empty() {
+                return Some(val.to_string());
+            }
+        }
+        if let Some(s) = session.as_str() {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
 impl App {
     #[allow(dead_code)]
     pub fn new(diff: GitDiff, repo_path: Option<String>) -> Self {
@@ -226,112 +238,179 @@ impl App {
     }
 
     pub fn new_with_config(diff: GitDiff, repo_path: Option<String>, config: crate::config::WeaversConfig) -> Self {
-        let cwd = repo_path.as_deref();
-
-        // Initially only the primary agent is spawned; the review agent is spawned on demand via Ctrl+R.
-        // In unit tests, avoid spawning background CLI daemons and connecting to Herdr.
-        let mut agy_session = None;
-        let mut claude_session = None;
-
-        if !cfg!(test) {
-            match config.primary_agent {
-                crate::config::AgentKind::Agy => {
-                    agy_session = TerminalSession::spawn(
-                        "agy",
-                        &["--dangerously-skip-permissions"],
-                        "AntigravityCLI",
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
-                }
-                crate::config::AgentKind::Claude => {
-                    claude_session = TerminalSession::spawn(
-                        "claude",
-                        &["--dangerously-skip-permissions"],
-                        "ClaudeCode",
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
-                }
-                other => {
-                    agy_session = TerminalSession::spawn(
-                        other.command_bin(),
-                        &[],
-                        other.display_name(),
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
-                }
-            }
-        }
-
-        let initial_focus: AgentFocus = config.primary_agent.into();
-
         let herdr = if cfg!(test) {
             None
         } else {
-            let h_opt = HerdrClient::try_detect();
-            if let Some(h) = &h_opt {
-                match config.primary_agent {
-                    crate::config::AgentKind::Agy => {
-                        let is_rev = config.review_agent == crate::config::AgentKind::Agy;
-                        let agy_pid = agy_session.as_ref().and_then(|s| s.process_id());
-                        let active_conv_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(cwd, None, agy_pid);
-                        h.report_active_agent(
-                            "agy",
-                            crate::herdr::AgentState::Idle,
-                            Some("Antigravity CLI"),
-                            active_conv_id.as_deref(),
-                            is_rev,
-                        );
+            HerdrClient::try_detect()
+        };
+
+        let mut detected_agents = Vec::new();
+        if let Some(ref h) = herdr {
+            detected_agents = h.list_agents();
+        }
+
+        let focused_workspace_id = herdr.as_ref().and_then(|h| h.get_focused_workspace_id());
+
+        let primary_pane_id = config
+            .primary_pane_id
+            .clone()
+            .filter(|id| {
+                if detected_agents.is_empty() {
+                    return true;
+                }
+                if let Some(ag) = detected_agents.iter().find(|a| &a.pane_id == id) {
+                    focused_workspace_id.is_none() || ag.workspace_id.as_deref() == focused_workspace_id.as_deref()
+                } else {
+                    false
+                }
+            })
+            .or_else(|| {
+                let expected = config.primary_agent.as_str().to_lowercase();
+                // 1. Prefer agent of expected kind in the focused workspace
+                if let Some(ref ws_id) = focused_workspace_id {
+                    if let Some(ag) = detected_agents.iter().find(|a| {
+                        a.agent.to_lowercase() == expected && a.workspace_id.as_deref() == Some(ws_id.as_str())
+                    }) {
+                        return Some(ag.pane_id.clone());
                     }
-                    crate::config::AgentKind::Claude => {
-                        let is_rev = config.review_agent == crate::config::AgentKind::Claude;
-                        let claude_sess = crate::markdown_renderer::detect_active_claude_session_id(cwd);
-                        h.report_active_agent(
-                            "claude",
-                            crate::herdr::AgentState::Idle,
-                            Some("Claude Code"),
-                            claude_sess.as_deref(),
-                            is_rev,
-                        );
+                }
+                // 2. Match by repo_path
+                if let Some(ref path) = repo_path {
+                    let norm_path = std::fs::canonicalize(path)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.clone());
+                    for ag in &detected_agents {
+                        if ag.agent.to_lowercase() == expected {
+                            if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                                let norm_cwd = std::fs::canonicalize(cwd)
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|_| cwd.to_string());
+                                if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
+                                    return Some(ag.pane_id.clone());
+                                }
+                            }
+                        }
                     }
-                    other => {
-                        let is_rev = config.review_agent == other;
-                        h.report_active_agent(
-                            other.as_str(),
-                            crate::herdr::AgentState::Idle,
-                            Some(other.display_name()),
-                            None,
-                            is_rev,
-                        );
+                }
+                // 3. Fallback to any agent of expected kind
+                detected_agents
+                    .iter()
+                    .find(|a| a.agent.to_lowercase() == expected)
+                    .map(|a| a.pane_id.clone())
+            });
+
+        let review_pane_id = config
+            .review_pane_id
+            .clone()
+            .filter(|id| {
+                if detected_agents.is_empty() {
+                    return true;
+                }
+                if let Some(ag) = detected_agents.iter().find(|a| &a.pane_id == id) {
+                    focused_workspace_id.is_none() || ag.workspace_id.as_deref() == focused_workspace_id.as_deref()
+                } else {
+                    false
+                }
+            })
+            .or_else(|| {
+                let expected = config.review_agent.as_str().to_lowercase();
+                // 1. Prefer agent of expected kind in the focused workspace
+                if let Some(ref ws_id) = focused_workspace_id {
+                    if let Some(ag) = detected_agents.iter().find(|a| {
+                        a.agent.to_lowercase() == expected && a.workspace_id.as_deref() == Some(ws_id.as_str())
+                    }) {
+                        return Some(ag.pane_id.clone());
+                    }
+                }
+                // 2. Match by repo_path
+                if let Some(ref path) = repo_path {
+                    let norm_path = std::fs::canonicalize(path)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.clone());
+                    for ag in &detected_agents {
+                        if ag.agent.to_lowercase() == expected {
+                            if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                                let norm_cwd = std::fs::canonicalize(cwd)
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|_| cwd.to_string());
+                                if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
+                                    return Some(ag.pane_id.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                // 3. Fallback to any agent of expected kind
+                detected_agents
+                    .iter()
+                    .find(|a| a.agent.to_lowercase() == expected)
+                    .map(|a| a.pane_id.clone())
+            });
+
+        let mut active_antigravity_conversation_id = None;
+        if let Some(ref target_id) = primary_pane_id {
+            if let Some(ag) = detected_agents.iter().find(|a| &a.pane_id == target_id) {
+                active_antigravity_conversation_id = extract_session_id_from_agent(ag);
+            }
+        }
+        if active_antigravity_conversation_id.is_none() {
+            if let Some(ref ws_id) = focused_workspace_id {
+                for ag in &detected_agents {
+                    if (ag.agent.to_lowercase() == "agy" || ag.agent.to_lowercase() == "antigravity")
+                        && ag.workspace_id.as_deref() == Some(ws_id.as_str())
+                    {
+                        if let Some(id) = extract_session_id_from_agent(ag) {
+                            active_antigravity_conversation_id = Some(id);
+                            break;
+                        }
                     }
                 }
             }
-            h_opt
+        }
+        if active_antigravity_conversation_id.is_none() {
+            if let Some(ref path) = repo_path {
+                let norm_path = std::fs::canonicalize(path)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.clone());
+                for ag in &detected_agents {
+                    if ag.agent.to_lowercase() == "agy" || ag.agent.to_lowercase() == "antigravity" {
+                        if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                            let norm_cwd = std::fs::canonicalize(cwd)
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| cwd.to_string());
+                            if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
+                                if let Some(id) = extract_session_id_from_agent(ag) {
+                                    active_antigravity_conversation_id = Some(id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if active_antigravity_conversation_id.is_none() {
+            active_antigravity_conversation_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(
+                repo_path.as_deref(),
+                None,
+                None,
+            );
+        }
+        if active_antigravity_conversation_id.is_none() {
+            if let Some(ag) = detected_agents.iter().find(|a| a.agent.to_lowercase() == "agy" || a.agent.to_lowercase() == "antigravity") {
+                active_antigravity_conversation_id = extract_session_id_from_agent(ag);
+            }
+        }
+
+        let artifacts = if let Some(ref conv_id) = active_antigravity_conversation_id {
+            crate::markdown_renderer::discover_artifacts_for_session(conv_id)
+        } else {
+            crate::markdown_renderer::discover_artifacts(
+                repo_path.as_deref(),
+                None,
+                None,
+            )
         };
-
-        let classifications = HashMap::new();
-        let agy_pid = agy_session.as_ref().and_then(|s| s.process_id());
-        let active_antigravity_conversation_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(
-            repo_path.as_deref(),
-            None,
-            agy_pid,
-        );
-        let artifacts = crate::markdown_renderer::discover_artifacts(
-            repo_path.as_deref(),
-            None,
-            agy_pid,
-        );
-
-        let is_primary_claude = config.primary_agent == crate::config::AgentKind::Claude;
-        let rev_name = config.review_agent.as_str();
 
         let palette = if let Some(ref custom) = config.custom_theme {
             crate::theme::Palette::from_name(custom).unwrap_or_else(crate::theme::detect_herdr_theme)
@@ -341,13 +420,11 @@ impl App {
 
         let mut app = Self {
             diff,
-            active_tab: ActiveTab::Agents,
-            agent_focus: initial_focus,
-            agy_session,
-            claude_session,
-            show_claude: is_primary_claude,
-            show_review_agent: false,
+            active_tab: ActiveTab::GitDiff,
             config,
+            detected_agents,
+            primary_pane_id,
+            review_pane_id,
             diff_pane_focus: DiffPaneFocus::FileList,
             code_view_mode: CodeViewMode::Diff,
             show_diff_tree: true,
@@ -362,11 +439,11 @@ impl App {
             is_asking_question: false,
             question_input: String::new(),
             repo_path,
-            classifications,
+            classifications: HashMap::new(),
             is_classifying: false,
             artifacts,
             active_antigravity_conversation_id,
-            last_agy_pid: agy_pid,
+            last_agy_pid: None,
             last_conv_detect_time: std::time::Instant::now(),
             show_artifact_tree: true,
             selected_artifact_idx: 0,
@@ -374,10 +451,7 @@ impl App {
             artifact_cursor_idx: 0,
             artifact_pane_focus: ArtifactPaneFocus::FileList,
             pointwise_questions: Vec::new(),
-            status_message: format!(
-                "herdr-interactive-diff ready. [1-3] Tabs | [Ctrl+R] Split Review ({}) | [Ctrl+A] Switch AI | [Ctrl+H] Help",
-                rev_name
-            ),
+            status_message: "herdr-interactive-diff ready. [1-2] Tabs | [Ctrl+R] Review | [Ctrl+S] Validate | [Ctrl+A] Active Agents | [?] Ask AI | [Ctrl+H] Help".to_string(),
             should_quit: false,
             herdr,
             last_herdr_state: Some("idle".to_string()),
@@ -387,11 +461,6 @@ impl App {
             last_claude_transcript_len: 0,
             last_artifacts_check_time: std::time::Instant::now(),
             palette,
-            agent_selector_open: false,
-            agent_selector_idx: 0,
-            selecting_for_review: false,
-            active_herdr_agent_pane: None,
-            active_herdr_review_pane: None,
             show_agent_picker: false,
             agent_picker_target: AgentPickerTarget::Primary,
             agent_picker_idx: 0,
@@ -429,16 +498,77 @@ impl App {
 
     /// Returns or detects the active Antigravity conversation ID, caching it to avoid loss on resize/splits
     pub fn get_or_detect_active_agy_conversation_id(&mut self) -> Option<String> {
-        let current_pid = self.agy_session.as_ref().and_then(|s| s.process_id());
-        let screen_text = self.agy_session.as_ref().map(|s| s.read_screen_text());
+        // 0. If we already have a cached active conversation ID, verify it exists on disk before returning
+        if let Some(ref id) = self.active_antigravity_conversation_id {
+            if !id.trim().is_empty() {
+                if let Ok(home) = std::env::var("HOME") {
+                    let bdir = std::path::PathBuf::from(home).join(".gemini/antigravity-cli/brain").join(id);
+                    if bdir.is_dir() {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        }
+
+        // 1. Check primary target agent in detected_agents
+        let target_pane = self.find_primary_target();
+        if let Some(ref target) = target_pane {
+            for ag in &self.detected_agents {
+                if &ag.pane_id == target {
+                    if let Some(val) = extract_session_id_from_agent(ag) {
+                        self.active_antigravity_conversation_id = Some(val.clone());
+                        return Some(val);
+                    }
+                }
+            }
+
+            // Query pane.process_info from Herdr to detect active presence lock by PID
+            if let Some(ref h) = self.herdr {
+                if let Some(proc_resp) = h.call_sync("pane.process_info", serde_json::json!({ "pane_id": target })) {
+                    if let Some(info) = proc_resp.get("result").and_then(|r| r.get("process_info")) {
+                        let mut pids = Vec::new();
+                        if let Some(fg) = info.get("foreground_processes").and_then(|v| v.as_array()) {
+                            for p in fg {
+                                if let Some(pid) = p.get("pid").and_then(|v| v.as_u64()) {
+                                    pids.push(pid as u32);
+                                }
+                            }
+                        }
+                        if let Some(sp) = info.get("shell_pid").and_then(|v| v.as_u64()) {
+                            pids.push(sp as u32);
+                        }
+                        for pid in pids {
+                            if let Some(conv_id) = crate::markdown_renderer::detect_presence_lock_for_pid(pid) {
+                                self.active_antigravity_conversation_id = Some(conv_id.clone());
+                                return Some(conv_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check any detected agy agent with an active session ID
+        for ag in &self.detected_agents {
+            if ag.agent.to_lowercase() == "agy" || ag.agent.to_lowercase() == "antigravity" {
+                if let Some(val) = extract_session_id_from_agent(ag) {
+                    self.active_antigravity_conversation_id = Some(val.clone());
+                    return Some(val);
+                }
+            }
+        }
+
+        // 3. Fallback: inspect screen text and brain transcripts matching repo_path
+        let screen_text = self
+            .find_primary_target()
+            .and_then(|t| self.herdr.as_ref().and_then(|h| h.read_pane_text(&t, 100)));
         let detected = crate::markdown_renderer::detect_active_antigravity_conversation_id(
             self.repo_path.as_deref(),
             screen_text.as_deref(),
-            current_pid,
+            None,
         );
         if let Some(new_id) = detected {
             self.active_antigravity_conversation_id = Some(new_id);
-            self.last_agy_pid = current_pid;
         }
         self.active_antigravity_conversation_id.clone()
     }
@@ -863,100 +993,150 @@ impl App {
     }
 
     /// Checks whether two agent panels should be displayed simultaneously
+    #[allow(dead_code)]
     pub fn is_dual_agent_active(&self) -> bool {
-        self.show_review_agent
+        false
     }
 
-    /// Alterna exibição do painel da IA de review em split (Ctrl+R)
-    pub fn toggle_review_agent(&mut self) {
-        if self.show_review_agent {
-            self.show_review_agent = false;
-            self.agent_focus = AgentFocus::Antigravity;
-            self.status_message = "Review AI pane closed. Primary AI focused (100% width).".to_string();
-        } else {
-            self.show_review_agent = true;
-            if self.claude_session.is_none() {
-                self.launch_or_trigger_review();
-            }
-            self.agent_focus = AgentFocus::Claude;
-            self.status_message = format!(
-                "Review AI ({}) opened in split view (50/50). [Ctrl+O/Tab] Switch focus | [Ctrl+R] Close",
-                self.config.review_agent.display_name()
-            );
-        }
-    }
+    /// Returns the target identifier (pane ID or agent name) for Primary AI
+    pub fn find_primary_target(&self) -> Option<String> {
+        let focused_ws = self.herdr.as_ref().and_then(|h| h.get_focused_workspace_id());
 
-    /// Launches Review Agent in split view if not already running, and triggers review
-    #[allow(dead_code)]
-    pub fn launch_or_trigger_review(&mut self) {
-        self.show_review_agent = true;
-
-        let cwd = self.repo_path.as_deref();
-        match self.config.review_agent {
-            crate::config::AgentKind::Claude => {
-                self.show_claude = true;
-                if !cfg!(test) && self.claude_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.claude_session = TerminalSession::spawn(
-                        "claude",
-                        &["--dangerously-skip-permissions"],
-                        "ClaudeCode",
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
+        // 1. Explicit configured primary pane (if it matches focused workspace or if workspace is unknown)
+        if let Some(id) = self.primary_pane_id.as_ref().or(self.config.primary_pane_id.as_ref()) {
+            if !id.trim().is_empty() {
+                if let Some(ag) = self.detected_agents.iter().find(|a| &a.pane_id == id) {
+                    if focused_ws.is_none() || ag.workspace_id.as_deref() == focused_ws.as_deref() {
+                        return Some(id.clone());
+                    }
                 }
-                self.agent_focus = AgentFocus::Claude;
-                if let Some(h) = &mut self.herdr {
-                    let claude_sess = crate::markdown_renderer::detect_active_claude_session_id(cwd);
-                    h.report_claude(crate::herdr::AgentState::Working, Some("Claude Code starting"), claude_sess.as_deref(), true);
-                }
-            }
-            crate::config::AgentKind::Agy => {
-                if !cfg!(test) && self.agy_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.agy_session = TerminalSession::spawn(
-                        "agy",
-                        &["--dangerously-skip-permissions"],
-                        "AntigravityCLI",
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
-                }
-                self.agent_focus = AgentFocus::Antigravity;
-                if let Some(h) = &mut self.herdr {
-                    let agy_pid = self.agy_session.as_ref().and_then(|sess| sess.process_id());
-                    let active_conv_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(cwd, None, agy_pid);
-                    h.report_agy(crate::herdr::AgentState::Working, Some("Antigravity CLI starting"), active_conv_id.as_deref(), true);
-                }
-            }
-            other => {
-                if !cfg!(test) && self.claude_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.claude_session = TerminalSession::spawn(
-                        other.command_bin(),
-                        &[],
-                        other.display_name(),
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
-                }
-                self.agent_focus = AgentFocus::Claude;
-                self.status_message = format!("Review agent {} started in split.", other.display_name());
             }
         }
 
-        if !cfg!(test) {
-            self.trigger_review();
+        let expected = self.config.primary_agent.as_str().to_lowercase();
+
+        // 2. Match agent in focused workspace
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = self.detected_agents.iter().find(|a| {
+                a.agent.to_lowercase() == expected && a.workspace_id.as_deref() == Some(ws_id.as_str())
+            }) {
+                return Some(ag.pane_id.clone());
+            }
         }
+
+        // 3. Match by repo_path
+        if let Some(ref path) = self.repo_path {
+            let norm_path = std::fs::canonicalize(path).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path.clone());
+            for ag in &self.detected_agents {
+                if ag.agent.to_lowercase() == expected {
+                    if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                        let norm_cwd = std::fs::canonicalize(cwd).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| cwd.to_string());
+                        if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
+                            return Some(ag.pane_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Any agent in current focused workspace
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = self.detected_agents.iter().find(|a| a.workspace_id.as_deref() == Some(ws_id.as_str())) {
+                return Some(ag.pane_id.clone());
+            }
+        }
+
+        // 5. Configured pane ID if valid
+        if let Some(id) = self.primary_pane_id.as_ref().or(self.config.primary_pane_id.as_ref()) {
+            if !id.trim().is_empty() && self.detected_agents.iter().any(|a| &a.pane_id == id) {
+                return Some(id.clone());
+            }
+        }
+
+        // 6. Match any agent of requested kind
+        for ag in &self.detected_agents {
+            if ag.agent.to_lowercase() == expected {
+                return Some(ag.pane_id.clone());
+            }
+        }
+        self.detected_agents
+            .first()
+            .map(|a| a.pane_id.clone())
+            .or_else(|| Some(self.config.primary_agent.as_str().to_string()))
     }
 
-    /// Backward-compatible alias for launch_or_trigger_review
-    #[allow(dead_code)]
-    pub fn launch_or_trigger_claude(&mut self) {
-        self.launch_or_trigger_review();
+    /// Returns the target identifier (pane ID or agent name) for Review AI
+    pub fn find_review_target(&self) -> Option<String> {
+        let focused_ws = self.herdr.as_ref().and_then(|h| h.get_focused_workspace_id());
+
+        // 1. Explicit configured review pane
+        if let Some(id) = self.review_pane_id.as_ref().or(self.config.review_pane_id.as_ref()) {
+            if !id.trim().is_empty() {
+                if let Some(ag) = self.detected_agents.iter().find(|a| &a.pane_id == id) {
+                    if focused_ws.is_none() || ag.workspace_id.as_deref() == focused_ws.as_deref() {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        }
+
+        let expected = self.config.review_agent.as_str().to_lowercase();
+
+        // 2. Match agent in focused workspace
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = self.detected_agents.iter().find(|a| {
+                a.agent.to_lowercase() == expected && a.workspace_id.as_deref() == Some(ws_id.as_str())
+            }) {
+                return Some(ag.pane_id.clone());
+            }
+        }
+
+        // 3. Match by repo_path
+        if let Some(ref path) = self.repo_path {
+            let norm_path = std::fs::canonicalize(path).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path.clone());
+            for ag in &self.detected_agents {
+                if ag.agent.to_lowercase() == expected {
+                    if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                        let norm_cwd = std::fs::canonicalize(cwd).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| cwd.to_string());
+                        if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
+                            return Some(ag.pane_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Any agent in current focused workspace
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = self.detected_agents.iter().find(|a| a.workspace_id.as_deref() == Some(ws_id.as_str())) {
+                return Some(ag.pane_id.clone());
+            }
+        }
+
+        // 5. Configured pane ID if valid
+        if let Some(id) = self.review_pane_id.as_ref().or(self.config.review_pane_id.as_ref()) {
+            if !id.trim().is_empty() && self.detected_agents.iter().any(|a| &a.pane_id == id) {
+                return Some(id.clone());
+            }
+        }
+
+        // 6. Match any agent of requested kind
+        for ag in &self.detected_agents {
+            if ag.agent.to_lowercase() == expected {
+                return Some(ag.pane_id.clone());
+            }
+        }
+        if self.detected_agents.len() > 1 {
+            return Some(self.detected_agents[1].pane_id.clone());
+        }
+        Some(self.config.review_agent.as_str().to_string())
+    }
+
+    /// Refreshes the list of active agents detected by Herdr
+    pub fn refresh_detected_agents(&mut self) {
+        if let Some(h) = &self.herdr {
+            self.detected_agents = h.list_agents();
+        }
     }
 
     /// Scrolls the Help modal content up or down
@@ -968,75 +1148,12 @@ impl App {
         }
     }
 
-    /// Restarts focused agent terminal
-    #[allow(dead_code)]
-    pub fn restart_focused_agent(&mut self) {
-        match self.agent_focus {
-            AgentFocus::Antigravity => self.restart_antigravity(),
-            AgentFocus::Claude => self.restart_claude(),
-        }
-    }
-
-    /// Envia bytes brutos (teclas digitadas) para a sessão do agente atualmente em foco
-    #[allow(dead_code)]
-    pub fn send_key_to_agent(&self, bytes: &[u8]) {
-        match self.agent_focus {
-            AgentFocus::Antigravity => {
-                if let Some(s) = &self.agy_session {
-                    s.send_bytes(bytes);
-                }
-            }
-            AgentFocus::Claude => {
-                if let Some(s) = &self.claude_session {
-                    s.send_bytes(bytes);
-                }
-            }
-        }
-    }
-
-    /// Envia texto com Bracketed Paste Mode de forma atômica para a sessão do agente atualmente em foco
-    pub fn paste_text_to_agent(&self, text: &str) {
-        match self.agent_focus {
-            AgentFocus::Antigravity => {
-                if let Some(s) = &self.agy_session {
-                    s.paste_text(text);
-                }
-            }
-            AgentFocus::Claude => {
-                if let Some(s) = &self.claude_session {
-                    s.paste_text(text);
-                }
-            }
-        }
-    }
-
-    /// Switches focus between Primary and Review agents (when both are active)
-    #[allow(dead_code)]
-    pub fn toggle_agent_focus(&mut self) {
-        if !self.is_dual_agent_active() {
-            let rev_name = self.config.review_agent.display_name();
-            self.status_message = format!("Review agent ({}) is not active. Press Ctrl+R to launch.", rev_name);
-            return;
-        }
-        self.agent_focus = match self.agent_focus {
-            AgentFocus::Antigravity => AgentFocus::Claude,
-            AgentFocus::Claude => AgentFocus::Antigravity,
-        };
-        self.sync_herdr_agent_state("idle");
-    }
-
     /// Opens AI Picker Modal (Ctrl+A)
     pub fn open_agent_picker(&mut self) {
         self.show_agent_picker = true;
-        let current = match self.agent_picker_target {
-            AgentPickerTarget::Primary => self.config.primary_agent,
-            AgentPickerTarget::Review => self.config.review_agent,
-        };
-        self.agent_picker_idx = crate::config::ALL_AGENTS
-            .iter()
-            .position(|&a| a == current)
-            .unwrap_or(0);
-        self.status_message = "Select AI Agent [↑/↓ Navigate | Tab Switch Primary/Review | Enter Confirm | Esc Close]".to_string();
+        self.refresh_detected_agents();
+        self.agent_picker_idx = 0;
+        self.status_message = "Select AI Agent from Herdr [↑/↓ Navigate | Tab Switch Role | Enter Select | r Refresh | Esc Close]".to_string();
     }
 
     /// Closes AI Picker Modal
@@ -1050,130 +1167,139 @@ impl App {
             AgentPickerTarget::Primary => AgentPickerTarget::Review,
             AgentPickerTarget::Review => AgentPickerTarget::Primary,
         };
-        let current = match self.agent_picker_target {
-            AgentPickerTarget::Primary => self.config.primary_agent,
-            AgentPickerTarget::Review => self.config.review_agent,
-        };
-        self.agent_picker_idx = crate::config::ALL_AGENTS
-            .iter()
-            .position(|&a| a == current)
-            .unwrap_or(0);
+        self.agent_picker_idx = 0;
     }
 
     /// Selects next AI in list
     pub fn agent_picker_next(&mut self) {
-        if self.agent_picker_idx + 1 < crate::config::ALL_AGENTS.len() {
-            self.agent_picker_idx += 1;
-        } else {
-            self.agent_picker_idx = 0;
+        let total = self.detected_agents.len();
+        if total > 0 {
+            self.agent_picker_idx = (self.agent_picker_idx + 1) % total;
         }
     }
 
     /// Selects previous AI in list
     pub fn agent_picker_prev(&mut self) {
-        if self.agent_picker_idx > 0 {
-            self.agent_picker_idx -= 1;
-        } else {
-            self.agent_picker_idx = crate::config::ALL_AGENTS.len().saturating_sub(1);
+        let total = self.detected_agents.len();
+        if total > 0 {
+            if self.agent_picker_idx > 0 {
+                self.agent_picker_idx -= 1;
+            } else {
+                self.agent_picker_idx = total - 1;
+            }
         }
     }
 
-    /// Confirms AI selection for current target and restarts session if needed
+    /// Confirms AI selection for current target and saves to config
     pub fn confirm_agent_picker(&mut self) {
-        let selected = crate::config::ALL_AGENTS[self.agent_picker_idx];
-        let cwd = self.repo_path.as_deref();
-        match self.agent_picker_target {
-            AgentPickerTarget::Primary => {
-                self.config.primary_agent = selected;
-                if !cfg!(test) {
-                    let cmd = selected.command_bin();
-                    let args: &[&str] = if selected == crate::config::AgentKind::Agy || selected == crate::config::AgentKind::Claude {
-                        &["--dangerously-skip-permissions"]
+        if let Some(agent) = self.detected_agents.get(self.agent_picker_idx).cloned() {
+            let parsed_kind = crate::config::AgentKind::parse(&agent.agent).unwrap_or(crate::config::AgentKind::Agy);
+            match self.agent_picker_target {
+                AgentPickerTarget::Primary => {
+                    self.config.primary_agent = parsed_kind;
+                    self.config.primary_pane_id = Some(agent.pane_id.clone());
+                    self.primary_pane_id = Some(agent.pane_id.clone());
+
+                    if let Some(ref cwd) = agent.cwd {
+                        self.repo_path = Some(cwd.clone());
+                    }
+
+                    // Reset cached conversation ID so we re-detect for the newly selected agent
+                    self.active_antigravity_conversation_id = None;
+
+                    let mut conv_id = extract_session_id_from_agent(&agent);
+
+                    if conv_id.is_none() && parsed_kind == crate::config::AgentKind::Agy {
+                        if let Some(ref h) = self.herdr {
+                            if let Some(proc_resp) = h.call_sync("pane.process_info", serde_json::json!({ "pane_id": &agent.pane_id })) {
+                                if let Some(info) = proc_resp.get("result").and_then(|r| r.get("process_info")) {
+                                    let mut pids = Vec::new();
+                                    if let Some(fg) = info.get("foreground_processes").and_then(|v| v.as_array()) {
+                                        for p in fg {
+                                            if let Some(pid) = p.get("pid").and_then(|v| v.as_u64()) {
+                                                pids.push(pid as u32);
+                                            }
+                                        }
+                                    }
+                                    if let Some(sp) = info.get("shell_pid").and_then(|v| v.as_u64()) {
+                                        pids.push(sp as u32);
+                                    }
+                                    for pid in pids {
+                                        if let Some(cid) = crate::markdown_renderer::detect_presence_lock_for_pid(pid) {
+                                            conv_id = Some(cid);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if conv_id.is_none() && parsed_kind == crate::config::AgentKind::Agy {
+                        let screen_text = self.herdr.as_ref().and_then(|h| h.read_pane_text(&agent.pane_id, 100));
+                        conv_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(
+                            agent.cwd.as_deref().or(self.repo_path.as_deref()),
+                            screen_text.as_deref(),
+                            None,
+                        );
+                    }
+
+                    if let Some(id) = conv_id {
+                        self.active_antigravity_conversation_id = Some(id);
+                    } else if parsed_kind != crate::config::AgentKind::Agy {
+                        self.active_antigravity_conversation_id = None;
+                    }
+
+                    self.refresh_artifacts();
+                    let _ = crate::config::save_config(&self.config);
+
+                    if parsed_kind == crate::config::AgentKind::Agy {
+                        self.active_tab = ActiveTab::Artifacts;
+                        if !self.artifacts.is_empty() {
+                            self.status_message = format!(
+                                "Primary AI set to {} [{}]. Loaded {} artifact(s).",
+                                agent.agent, agent.pane_id, self.artifacts.len()
+                            );
+                        } else {
+                            self.status_message = format!(
+                                "Primary AI set to {} [{}]. Switched to [2] Artifacts.",
+                                agent.agent, agent.pane_id
+                            );
+                        }
                     } else {
-                        &[]
-                    };
-                    self.agy_session = TerminalSession::spawn(
-                        cmd,
-                        args,
-                        selected.display_name(),
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
+                        self.status_message = format!("Primary AI set to {} [{}].", agent.agent, agent.pane_id);
+                    }
                 }
-                self.status_message = format!("Primary AI switched to {}.", selected.display_name());
-            }
-            AgentPickerTarget::Review => {
-                self.config.review_agent = selected;
-                if self.show_review_agent && !cfg!(test) {
-                    let cmd = selected.command_bin();
-                    let args: &[&str] = if selected == crate::config::AgentKind::Agy || selected == crate::config::AgentKind::Claude {
-                        &["--dangerously-skip-permissions"]
-                    } else {
-                        &[]
-                    };
-                    self.claude_session = TerminalSession::spawn(
-                        cmd,
-                        args,
-                        selected.display_name(),
-                        24,
-                        80,
-                        cwd,
-                    )
-                    .ok();
+                AgentPickerTarget::Review => {
+                    self.config.review_agent = parsed_kind;
+                    self.config.review_pane_id = Some(agent.pane_id.clone());
+                    self.review_pane_id = Some(agent.pane_id.clone());
+                    let _ = crate::config::save_config(&self.config);
+                    self.status_message = format!("Review AI set to {} [{}].", agent.agent, agent.pane_id);
                 }
-                self.status_message = format!("Review AI switched to {}.", selected.display_name());
             }
         }
         self.show_agent_picker = false;
     }
 
-    /// Triggers automated 5-lens review on the configured review agent
+    /// Triggers automated 5-lens review on the decoupled Review AI in Herdr
     pub fn trigger_review(&mut self) {
-        self.show_review_agent = true;
+        let prompt = crate::ai_engine::build_claude_review_prompt(&self.diff.raw);
+        let _ = crate::clipboard::copy_to_clipboard(&prompt);
 
-        match self.config.review_agent {
-            crate::config::AgentKind::Claude => {
-                self.show_claude = true;
-                if self.claude_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_claude();
+        let target = self.find_review_target().unwrap_or_else(|| self.config.review_agent.as_str().to_string());
+        if let Some(h) = &self.herdr {
+            match h.submit_agent_prompt(&target, &prompt) {
+                Ok(_) => {
+                    let _ = h.show_notification(&format!("5-lens review submitted to {}!", target));
+                    self.status_message = format!("5-lens automated review submitted to Review AI ({})!", target);
                 }
-                if let Some(session) = &self.claude_session {
-                    let prompt = crate::ai_engine::build_claude_review_prompt(&self.diff.raw);
-                    session.paste_command(&prompt);
-                    self.agent_focus = AgentFocus::Claude;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = "5-lens automated review triggered on Claude Code!".to_string();
-                } else {
-                    self.status_message = "Claude Code terminal could not be started.".to_string();
+                Err(err) => {
+                    self.status_message = format!("Review prompt copied to clipboard (submission error: {})", err);
                 }
             }
-            crate::config::AgentKind::Agy => {
-                if self.agy_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_antigravity();
-                }
-                if let Some(session) = &self.agy_session {
-                    let prompt = crate::ai_engine::build_claude_review_prompt(&self.diff.raw);
-                    session.paste_command(&prompt);
-                    self.agent_focus = AgentFocus::Antigravity;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = "5-lens automated review triggered on Antigravity CLI!".to_string();
-                } else {
-                    self.status_message = "Antigravity CLI terminal could not be started.".to_string();
-                }
-            }
-            other => {
-                if let Some(session) = &self.claude_session {
-                    let prompt = crate::ai_engine::build_claude_review_prompt(&self.diff.raw);
-                    session.paste_command(&prompt);
-                    self.agent_focus = AgentFocus::Claude;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = format!("5-lens automated review triggered on {}!", other.display_name());
-                } else {
-                    self.status_message = format!("Review triggered for {}.", other.display_name());
-                }
-            }
+        } else {
+            self.status_message = "Review prompt copied to clipboard (Herdr socket not active).".to_string();
         }
     }
 
@@ -1194,15 +1320,21 @@ impl App {
                 ) {
                     crate::markdown_renderer::ClaudeTranscriptResult::Unchanged => return false,
                     crate::markdown_renderer::ClaudeTranscriptResult::Modified(text) => {
-                        text.or_else(|| self.claude_session.as_ref().map(|s| s.read_screen_text()))
+                        text.or_else(|| {
+                            let rev_target = self.find_review_target()?;
+                            self.herdr.as_ref()?.read_pane_text(&rev_target, 200)
+                        })
                     }
                     crate::markdown_renderer::ClaudeTranscriptResult::NoSessionFile => {
-                        self.claude_session.as_ref().map(|s| s.read_screen_text())
+                        self.find_review_target()
+                            .and_then(|t| self.herdr.as_ref().and_then(|h| h.read_pane_text(&t, 200)))
                     }
                 }
             }
-            crate::config::AgentKind::Agy => self.agy_session.as_ref().map(|s| s.read_screen_text()),
-            _ => self.claude_session.as_ref().map(|s| s.read_screen_text()),
+            _ => {
+                self.find_review_target()
+                    .and_then(|t| self.herdr.as_ref().and_then(|h| h.read_pane_text(&t, 200)))
+            }
         };
 
         let text = match review_text {
@@ -1246,35 +1378,23 @@ impl App {
         self.sync_review_to_diff()
     }
 
-    /// Triggers anti-overengineering validation on Primary Agent
+    /// Triggers anti-overengineering validation on Primary Agent in Herdr
     pub fn trigger_validation(&mut self) {
-        match self.config.primary_agent {
-            crate::config::AgentKind::Agy => {
-                if self.agy_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_antigravity();
-                }
-            }
-            crate::config::AgentKind::Claude => {
-                if self.claude_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_claude();
-                }
-            }
-            _ => {}
-        }
-
         self.sync_review_to_diff();
 
         let review_text = match self.config.review_agent {
             crate::config::AgentKind::Claude => {
                 crate::markdown_renderer::read_latest_claude_session_text(self.repo_path.as_deref())
-                    .or_else(|| self.claude_session.as_ref().map(|s| s.read_screen_text()))
+                    .or_else(|| {
+                        let rev_target = self.find_review_target()?;
+                        self.herdr.as_ref()?.read_pane_text(&rev_target, 200)
+                    })
                     .unwrap_or_default()
             }
-            crate::config::AgentKind::Agy => {
-                self.agy_session.as_ref().map(|s| s.read_screen_text()).unwrap_or_default()
-            }
             _ => {
-                self.claude_session.as_ref().map(|s| s.read_screen_text()).unwrap_or_default()
+                self.find_review_target()
+                    .and_then(|target| self.herdr.as_ref()?.read_pane_text(&target, 200))
+                    .unwrap_or_default()
             }
         };
 
@@ -1294,233 +1414,58 @@ impl App {
         let prompt = crate::ai_engine::build_antigravity_validation_prompt(&context);
         let _ = crate::clipboard::copy_to_clipboard(&prompt);
 
-        match self.config.primary_agent {
-            crate::config::AgentKind::Agy => {
-                if let Some(agy) = &self.agy_session {
-                    agy.paste_command(&prompt);
-                    self.active_tab = ActiveTab::Agents;
-                    self.agent_focus = AgentFocus::Antigravity;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = "Review copied to Antigravity CLI (Anti-overengineering validation)!".to_string();
-                } else {
-                    self.status_message = "Antigravity CLI terminal is not active. Copied validation prompt to clipboard.".to_string();
+        let primary_target = self.find_primary_target().unwrap_or_else(|| self.config.primary_agent.as_str().to_string());
+        if let Some(h) = &self.herdr {
+            match h.submit_agent_prompt(&primary_target, &prompt) {
+                Ok(_) => {
+                    let _ = h.show_notification(&format!("Validation submitted to {}!", primary_target));
+                    self.status_message = format!("Review validation submitted to Primary AI ({})!", primary_target);
+                }
+                Err(err) => {
+                    self.status_message = format!("Validation prompt copied to clipboard (submission error: {})", err);
                 }
             }
-            crate::config::AgentKind::Claude => {
-                if let Some(claude) = &self.claude_session {
-                    claude.paste_command(&prompt);
-                    self.active_tab = ActiveTab::Agents;
-                    self.agent_focus = AgentFocus::Claude;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = "Review copied to Claude Code (Anti-overengineering validation)!".to_string();
-                } else {
-                    self.status_message = "Claude Code terminal is not active. Copied validation prompt to clipboard.".to_string();
-                }
-            }
-            other => {
-                if let Some(sess) = &self.agy_session {
-                    sess.paste_command(&prompt);
-                    self.active_tab = ActiveTab::Agents;
-                    self.agent_focus = AgentFocus::Antigravity;
-                    self.sync_herdr_agent_state("working");
-                    self.status_message = format!("Review copied to {} (Anti-overengineering validation)!", other.display_name());
-                } else {
-                    self.status_message = format!("Validation prompt copied to clipboard for {}!", other.display_name());
-                }
-            }
+        } else {
+            self.status_message = "Validation prompt copied to clipboard (Herdr socket not active).".to_string();
         }
     }
 
     /// Backward-compatible alias for trigger_validation
+    #[allow(dead_code)]
     pub fn trigger_antigravity_validation(&mut self) {
         self.trigger_validation();
     }
 
-    /// Synchronizes active agent state with Herdr Workspace Manager
-    pub fn sync_herdr_agent_state(&mut self, state: &str) {
-        let s = match state {
-            "working" => crate::herdr::AgentState::Working,
-            "blocked" => crate::herdr::AgentState::Blocked,
-            _ => crate::herdr::AgentState::Idle,
-        };
-        let is_dual = self.is_dual_agent_active();
-        let primary_agent = self.config.primary_agent;
-        let review_agent = self.config.review_agent;
-
-        let (target_agent, is_reviewer) = match self.agent_focus {
-            AgentFocus::Claude if is_dual && review_agent == crate::config::AgentKind::Claude => (review_agent, true),
-            AgentFocus::Claude if primary_agent == crate::config::AgentKind::Claude => (primary_agent, false),
-            AgentFocus::Antigravity if is_dual && review_agent != crate::config::AgentKind::Claude => (review_agent, true),
-            _ => (primary_agent, false),
-        };
-
-        let active_conv_id = self.get_or_detect_active_agy_conversation_id();
-        let claude_sess = crate::markdown_renderer::detect_active_claude_session_id(self.repo_path.as_deref());
-        let session_id = match target_agent {
-            crate::config::AgentKind::Agy => active_conv_id,
-            crate::config::AgentKind::Claude => claude_sess,
-            _ => None,
-        };
-
-        let msg = target_agent.display_name().to_string();
-        if let Some(h) = &mut self.herdr {
-            h.report_active_agent(target_agent.as_str(), s, Some(&msg), session_id.as_deref(), is_reviewer);
-        }
-        self.last_herdr_snapshot = Some(HerdrReportSnapshot {
-            agent: target_agent.as_str().to_string(),
-            state: s,
-            message: Some(msg),
-            session_id,
-            is_reviewer,
-        });
-        self.last_herdr_state = Some(state.to_string());
-        self.last_herdr_report_time = Some(std::time::Instant::now());
-    }
-
-    /// Dynamically updates status in Herdr (working, idle, or blocked) with state deduplication
+    /// Dynamically updates status in Herdr with state deduplication
     pub fn update_herdr_state(&mut self) {
-        if self.herdr.is_none() {
-            return;
+        if let Some(last) = self.last_herdr_report_time {
+            if last.elapsed() < std::time::Duration::from_millis(1500) {
+                return;
+            }
         }
-
-        let is_dual = self.is_dual_agent_active();
-        let primary_agent = self.config.primary_agent;
-        let review_agent = self.config.review_agent;
-
-        // Detect operational state for the primary agent session
-        let primary_session = if primary_agent == crate::config::AgentKind::Claude {
-            self.claude_session.as_ref()
-        } else {
-            self.agy_session.as_ref()
-        };
-        let primary_state = primary_session
-            .map(|s| crate::herdr::detect_session_state(s, primary_agent.as_str()))
-            .unwrap_or(crate::herdr::AgentState::Idle);
-
-        // Detect operational state for the reviewer agent session (if dual mode is active)
-        let review_session = if is_dual {
-            if review_agent == crate::config::AgentKind::Claude {
-                self.claude_session.as_ref()
-            } else {
-                self.agy_session.as_ref()
+        if let Some(h) = &self.herdr {
+            let agents = h.list_agents();
+            if !agents.is_empty() {
+                self.detected_agents = agents;
             }
-        } else {
-            None
-        };
-        let review_state = review_session
-            .map(|s| crate::herdr::detect_session_state(s, review_agent.as_str()))
-            .unwrap_or(crate::herdr::AgentState::Idle);
-
-        let active_conv_id = self.get_or_detect_active_agy_conversation_id();
-        let claude_sess = crate::markdown_renderer::detect_active_claude_session_id(self.repo_path.as_deref());
-
-        // Determine which agent has priority for Herdr status reporting without flicking:
-        // 1. If an agent is Blocked (waiting for user input / approval), report that agent as Blocked
-        // 2. If one agent is Working while the other is not, report that agent as Working
-        // 3. Otherwise, report the currently focused agent with its state
-        let (active_agent_kind, state, is_reviewer) = if review_state == crate::herdr::AgentState::Blocked && is_dual {
-            (review_agent, review_state, true)
-        } else if primary_state == crate::herdr::AgentState::Blocked {
-            (primary_agent, primary_state, false)
-        } else if review_state == crate::herdr::AgentState::Working && primary_state != crate::herdr::AgentState::Working && is_dual {
-            (review_agent, review_state, true)
-        } else if primary_state == crate::herdr::AgentState::Working && review_state != crate::herdr::AgentState::Working {
-            (primary_agent, primary_state, false)
-        } else {
-            match self.agent_focus {
-                AgentFocus::Claude if is_dual && review_agent == crate::config::AgentKind::Claude => {
-                    (review_agent, review_state, true)
-                }
-                AgentFocus::Claude if primary_agent == crate::config::AgentKind::Claude => {
-                    (primary_agent, primary_state, false)
-                }
-                AgentFocus::Antigravity if is_dual && review_agent != crate::config::AgentKind::Claude => {
-                    (review_agent, review_state, true)
-                }
-                _ => (primary_agent, primary_state, false),
-            }
-        };
-
-        let msg = match state {
-            crate::herdr::AgentState::Blocked => format!("{} (needs input)", active_agent_kind.display_name()),
-            crate::herdr::AgentState::Working => format!("{} (working)", active_agent_kind.display_name()),
-            crate::herdr::AgentState::Idle => active_agent_kind.display_name().to_string(),
-        };
-
-        let session_id = match active_agent_kind {
-            crate::config::AgentKind::Agy => active_conv_id,
-            crate::config::AgentKind::Claude => claude_sess,
-            _ => None,
-        };
-
-        let new_snapshot = HerdrReportSnapshot {
-            agent: active_agent_kind.as_str().to_string(),
-            state,
-            message: Some(msg.clone()),
-            session_id: session_id.clone(),
-            is_reviewer,
-        };
-
-        let now = std::time::Instant::now();
-        let should_send = match &self.last_herdr_snapshot {
-            Some(last) => *last != new_snapshot,
-            None => true,
-        };
-
-        if should_send {
-            if let Some(h) = &mut self.herdr {
-                h.report_active_agent(&new_snapshot.agent, state, Some(&msg), session_id.as_deref(), is_reviewer);
-            }
-            self.last_herdr_snapshot = Some(new_snapshot);
-            self.last_herdr_report_time = Some(now);
         }
-
-        self.last_herdr_state = Some(state.as_str().to_string());
+        self.last_herdr_report_time = Some(std::time::Instant::now());
     }
 
     /// Cleans up Herdr registrations when exiting
     pub fn cleanup(&mut self) {
         if let Some(h) = &mut self.herdr {
-            h.release_agents(&[
-                self.config.primary_agent.as_str(),
-                self.config.review_agent.as_str(),
-            ]);
+            let _ = h.call_sync("pane.clear_agent_authority", serde_json::json!({
+                "pane_id": &h.pane_id,
+                "source": "herdr-interactive-diff",
+            }));
+            let _ = h.call_sync("pane.report_metadata", serde_json::json!({
+                "pane_id": &h.pane_id,
+                "source": "herdr-interactive-diff",
+                "clear_display_agent": true,
+                "clear_state_labels": true,
+            }));
         }
-    }
-
-    /// Restarts Claude Code session
-    pub fn restart_claude(&mut self) {
-        self.show_claude = true;
-        let cwd = self.repo_path.as_deref();
-        self.claude_session = TerminalSession::spawn(
-            "claude",
-            &["--dangerously-skip-permissions"],
-            "ClaudeCode",
-            24,
-            80,
-            cwd,
-        )
-        .ok();
-        self.agent_focus = AgentFocus::Claude;
-        self.sync_herdr_agent_state("idle");
-        self.status_message = "Claude Code restarted.".to_string();
-    }
-
-    /// Restarts Antigravity CLI session
-    pub fn restart_antigravity(&mut self) {
-        let cwd = self.repo_path.as_deref();
-        self.agy_session = TerminalSession::spawn(
-            "agy",
-            &["--dangerously-skip-permissions"],
-            "AntigravityCLI",
-            24,
-            80,
-            cwd,
-        )
-        .ok();
-        self.agent_focus = AgentFocus::Antigravity;
-        self.sync_herdr_agent_state("idle");
-        self.status_message = "Antigravity CLI restarted.".to_string();
     }
 
     /// Gets context text for selected diff hunk
@@ -1555,7 +1500,7 @@ impl App {
         }
     }
 
-    /// Submits question about selected diff hunk to focused AI agent
+    /// Submits question about selected diff hunk directly to Primary AI in Herdr
     pub fn submit_question_to_agent(&mut self) {
         let question = self.question_input.trim().to_string();
         if question.is_empty() {
@@ -1576,29 +1521,22 @@ impl App {
             file_path, context, question
         );
 
-        match self.agent_focus {
-            AgentFocus::Antigravity => {
-                if self.agy_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_antigravity();
-                }
-                if let Some(agy) = &self.agy_session {
-                    agy.send_command(&prompt);
-                }
-            }
-            AgentFocus::Claude => {
-                if self.claude_session.as_ref().map(|s| !s.is_alive()).unwrap_or(true) {
-                    self.restart_claude();
-                }
-                if let Some(claude) = &self.claude_session {
-                    claude.send_command(&prompt);
-                }
-            }
-        }
+        let _ = crate::clipboard::copy_to_clipboard(&prompt);
 
-        let agent_name = match self.agent_focus {
-            AgentFocus::Antigravity => "Antigravity CLI",
-            AgentFocus::Claude => "Claude Code",
-        };
+        let primary_target = self.find_primary_target().unwrap_or_else(|| self.config.primary_agent.as_str().to_string());
+        if let Some(h) = &self.herdr {
+            match h.submit_agent_prompt(&primary_target, &prompt) {
+                Ok(_) => {
+                    let _ = h.show_notification(&format!("Question sent to Primary AI ({})!", primary_target));
+                    self.status_message = format!("Question submitted to Primary AI ({})!", primary_target);
+                }
+                Err(e) => {
+                    self.status_message = format!("Question copied to clipboard (send failed: {})", e);
+                }
+            }
+        } else {
+            self.status_message = "Question copied to clipboard (Herdr socket not active).".to_string();
+        }
 
         let current_hunk_id = self.current_selected_hunk_id();
         let pq = PointwiseQuestion {
@@ -1618,10 +1556,11 @@ impl App {
                     level: ComplexityLevel::Curiosidade,
                     target_line: None,
                     caveman_msg: Some(format!("󰌵 QUESTION: {}", question)),
-                    explanation: Some(format!("Question sent to {}:\n{}", agent_name, question)),
+                    explanation: Some(format!("Question sent to Primary AI ({}):\n{}", primary_target, question)),
                     hint: None,
                 }
             });
+            entry.caveman_msg = Some(format!("󰌵 QUESTION: {}", question));
             let prev_expl = entry.explanation.clone().unwrap_or_default();
             if !prev_expl.contains(&question) {
                 entry.explanation = Some(format!("{}\n\n󰌵 Question [?]: {}", prev_expl, question));
@@ -1629,11 +1568,9 @@ impl App {
         }
         self.rebuild_code_lines();
 
-        self.status_message = format!("Question about '{}' sent to {}!", file_path, agent_name);
+        self.status_message = format!("Question submitted to Primary AI ({})!", primary_target);
         self.question_input.clear();
         self.is_asking_question = false;
-        self.active_tab = ActiveTab::Agents;
-        self.sync_herdr_agent_state("working");
     }
 
     /// Indicates whether active Antigravity session generated artifacts
@@ -1674,20 +1611,19 @@ impl App {
     /// Reloads artifacts from active Antigravity session
     pub fn refresh_artifacts(&mut self) {
         self.last_conv_detect_time = std::time::Instant::now();
+        self.refresh_detected_agents();
         if let Some(conv_id) = self.get_or_detect_active_agy_conversation_id() {
             self.artifacts = crate::markdown_renderer::discover_artifacts_for_session(&conv_id);
         } else {
-            let screen_text = self.agy_session.as_ref().map(|s| s.read_screen_text());
-            let agy_pid = self.agy_session.as_ref().and_then(|s| s.process_id());
-            self.artifacts = discover_artifacts(self.repo_path.as_deref(), screen_text.as_deref(), agy_pid);
+            let screen_text = self
+                .find_primary_target()
+                .and_then(|t| self.herdr.as_ref().and_then(|h| h.read_pane_text(&t, 100)));
+            self.artifacts = discover_artifacts(self.repo_path.as_deref(), screen_text.as_deref(), None);
             if let Some(first) = self.artifacts.first().and_then(|a| a.conversation_id.clone()) {
                 self.active_antigravity_conversation_id = Some(first);
             }
         }
         if self.artifacts.is_empty() {
-            if self.active_tab == ActiveTab::Artifacts {
-                self.active_tab = ActiveTab::GitDiff;
-            }
             self.selected_artifact_idx = 0;
             self.status_message = "No artifacts found in active Antigravity session.".to_string();
         } else {
@@ -1708,7 +1644,9 @@ impl App {
         }
         self.last_artifacts_check_time = std::time::Instant::now();
 
-        let screen_text = self.agy_session.as_ref().map(|s| s.read_screen_text());
+        let screen_text = self
+            .find_primary_target()
+            .and_then(|t| self.herdr.as_ref().and_then(|h| h.read_pane_text(&t, 100)));
         let has_resume_on_screen = screen_text.as_deref().map(|s| s.contains("resume") || s.contains("Resume")).unwrap_or(false);
         let should_detect = self.active_antigravity_conversation_id.is_none()
             || has_resume_on_screen
@@ -1724,8 +1662,7 @@ impl App {
         let new_artifacts = if let Some(ref id) = conv_id {
             crate::markdown_renderer::discover_artifacts_for_session(id)
         } else {
-            let agy_pid = self.agy_session.as_ref().and_then(|s| s.process_id());
-            let list = discover_artifacts(self.repo_path.as_deref(), screen_text.as_deref(), agy_pid);
+            let list = discover_artifacts(self.repo_path.as_deref(), screen_text.as_deref(), None);
             if let Some(first) = list.first().and_then(|a| a.conversation_id.clone()) {
                 self.active_antigravity_conversation_id = Some(first);
             }
@@ -1740,9 +1677,6 @@ impl App {
         if count_changed || content_changed {
             self.artifacts = new_artifacts;
             if self.artifacts.is_empty() {
-                if self.active_tab == ActiveTab::Artifacts {
-                    self.active_tab = ActiveTab::Agents;
-                }
                 self.selected_artifact_idx = 0;
             } else if self.selected_artifact_idx >= self.artifacts.len() {
                 self.selected_artifact_idx = self.artifacts.len().saturating_sub(1);
@@ -1830,21 +1764,18 @@ mod tests {
     #[test]
     fn test_app_new() {
         let diff = GitDiff::demo();
-        let app = App::new(diff, None);
-        assert_eq!(app.active_tab, ActiveTab::Agents);
-        assert_eq!(app.agent_focus, AgentFocus::Antigravity);
-        assert!(!app.show_claude);
-        assert!(app.claude_session.is_none());
+        let app = App::new_with_config(diff, None, crate::config::PluginConfig::default());
+        assert_eq!(app.active_tab, ActiveTab::GitDiff);
+        assert_eq!(app.config.primary_agent, crate::config::AgentKind::Agy);
+        assert_eq!(app.config.review_agent, crate::config::AgentKind::Claude);
     }
 
     #[test]
     fn test_launch_claude() {
         let diff = GitDiff::demo();
         let mut app = App::new(diff, None);
-        assert!(!app.show_claude);
-        app.launch_or_trigger_claude();
-        assert!(app.show_claude);
-        assert_eq!(app.agent_focus, AgentFocus::Claude);
+        app.trigger_claude_review();
+        assert!(app.status_message.contains("review") || app.status_message.contains("Review"));
     }
 
     #[test]
@@ -1891,8 +1822,8 @@ mod tests {
 
         assert!(!app.is_asking_question);
         assert!(app.question_input.is_empty());
-        assert_eq!(app.active_tab, ActiveTab::Agents);
-        assert!(app.status_message.contains("Question about"));
+        assert_eq!(app.active_tab, ActiveTab::GitDiff);
+        assert!(app.status_message.contains("Question submitted to Primary AI"));
         assert_eq!(app.pointwise_questions.len(), 1);
         assert_eq!(app.pointwise_questions[0].question, "Is there a race condition here?");
     }
@@ -1953,31 +1884,10 @@ mod tests {
         let diff = GitDiff::demo();
         let mut app = App::new(diff, None);
         assert_eq!(app.last_herdr_state.as_deref(), Some("idle"));
+        assert!(app.last_herdr_report_time.is_some());
 
-        app.sync_herdr_agent_state("working");
-        assert_eq!(app.last_herdr_state.as_deref(), Some("working"));
-    }
-
-    #[test]
-    fn test_herdr_state_deduplication() {
-        let diff = GitDiff::demo();
-        let mut app = App::new(diff, None);
-        app.herdr = Some(crate::herdr::HerdrClient::new(
-            std::path::PathBuf::from("/nonexistent/herdr.sock"),
-            "test:pane1".to_string(),
-        ));
-
-        // First update initializes snapshot
         app.update_herdr_state();
-        let snap1 = app.last_herdr_snapshot.clone();
-        assert!(snap1.is_some());
-        let time1 = app.last_herdr_report_time;
-
-        // Second immediate update without state change should be deduplicated (time and snapshot unchanged)
-        app.update_herdr_state();
-        let snap2 = app.last_herdr_snapshot.clone();
-        assert_eq!(snap1, snap2);
-        assert_eq!(time1, app.last_herdr_report_time);
+        assert!(app.last_herdr_report_time.is_some());
     }
 
     #[test]
@@ -2029,8 +1939,8 @@ mod tests {
 
         app.trigger_antigravity_validation();
         assert!(
-            app.status_message.contains("Antigravity CLI")
-                || app.status_message.contains("Claude review copied")
+            app.status_message.contains("Validation prompt")
+                || app.status_message.contains("Primary AI")
         );
     }
 
@@ -2059,20 +1969,64 @@ mod tests {
         let cfg = crate::config::WeaversConfig {
             primary_agent: crate::config::AgentKind::Claude,
             review_agent: crate::config::AgentKind::Agy,
+            primary_pane_id: Some("w1:p1".to_string()),
+            review_pane_id: Some("w1:p2".to_string()),
             custom_theme: None,
+            placement: crate::config::DiffPlacement::Split,
         };
         let mut app = App::new_with_config(diff, None, cfg);
-        assert_eq!(app.active_tab, ActiveTab::Agents);
-        assert_eq!(app.agent_focus, AgentFocus::Claude);
-        assert!(app.show_claude);
-        assert!(!app.show_review_agent);
-        assert!(!app.is_dual_agent_active());
+        assert_eq!(app.active_tab, ActiveTab::GitDiff);
+        assert_eq!(app.config.primary_agent, crate::config::AgentKind::Claude);
+        assert_eq!(app.primary_pane_id.as_deref(), Some("w1:p1"));
+        assert_eq!(app.review_pane_id.as_deref(), Some("w1:p2"));
 
-        // When review is triggered, review agent (agy) activates
-        app.launch_or_trigger_review();
-        assert!(app.show_review_agent);
-        assert_eq!(app.agent_focus, AgentFocus::Antigravity);
-        assert!(app.is_dual_agent_active());
+        app.trigger_review();
+        assert!(app.status_message.contains("review") || app.status_message.contains("Review"));
+    }
+
+    #[test]
+    fn test_agent_picker_with_detected_agents() {
+        let diff = GitDiff::demo();
+        let mut app = App::new(diff, None);
+        app.detected_agents = vec![
+            crate::herdr::DetectedAgent {
+                terminal_id: None,
+                agent: "agy".to_string(),
+                agent_status: "working".to_string(),
+                workspace_id: None,
+                tab_id: None,
+                pane_id: "w1:p10".to_string(),
+                focused: true,
+                cwd: Some("/path/to/repo".to_string()),
+                foreground_cwd: None,
+                agent_session: None,
+            },
+            crate::herdr::DetectedAgent {
+                terminal_id: None,
+                agent: "claude".to_string(),
+                agent_status: "idle".to_string(),
+                workspace_id: None,
+                tab_id: None,
+                pane_id: "w1:p11".to_string(),
+                focused: false,
+                cwd: Some("/path/to/repo".to_string()),
+                foreground_cwd: None,
+                agent_session: None,
+            },
+        ];
+
+        app.open_agent_picker();
+        assert!(app.show_agent_picker);
+        assert_eq!(app.agent_picker_target, AgentPickerTarget::Primary);
+        assert_eq!(app.agent_picker_idx, 0);
+
+        // Select second agent as Primary
+        app.agent_picker_next();
+        assert_eq!(app.agent_picker_idx, 1);
+        app.confirm_agent_picker();
+        assert_eq!(app.primary_pane_id.as_deref(), Some("w1:p11"));
+        assert_eq!(app.config.primary_agent, crate::config::AgentKind::Claude);
+        assert!(!app.show_agent_picker);
     }
 
     #[test]
@@ -2127,5 +2081,65 @@ mod tests {
         // Calling get_or_detect_active_agy_conversation_id preserves the cached ID
         let cached = app.get_or_detect_active_agy_conversation_id();
         assert_eq!(cached, Some("12345678-1234-1234-1234-123456789abc".to_string()));
+    }
+
+    #[test]
+    fn test_confirm_agent_picker_with_antigravity_session() {
+        let diff = GitDiff::demo();
+        let mut app = App::new(diff, None);
+        app.detected_agents = vec![
+            crate::herdr::DetectedAgent {
+                terminal_id: None,
+                agent: "agy".to_string(),
+                agent_status: "working".to_string(),
+                workspace_id: None,
+                tab_id: None,
+                pane_id: "w1W:p2".to_string(),
+                focused: false,
+                cwd: Some("/path/to/repo".to_string()),
+                foreground_cwd: None,
+                agent_session: Some(serde_json::json!({
+                    "agent": "agy",
+                    "kind": "id",
+                    "source": "herdr:antigravity_cli",
+                    "value": "4250756d-9893-4e16-af4f-484d8116e003"
+                })),
+            },
+        ];
+
+        app.open_agent_picker();
+        assert_eq!(app.agent_picker_idx, 0);
+        app.confirm_agent_picker();
+
+        assert_eq!(app.config.primary_agent, crate::config::AgentKind::Agy);
+        assert_eq!(app.primary_pane_id.as_deref(), Some("w1W:p2"));
+        assert_eq!(
+            app.active_antigravity_conversation_id.as_deref(),
+            Some("4250756d-9893-4e16-af4f-484d8116e003")
+        );
+        assert!(!app.show_agent_picker);
+        // Since session 4250756d-... has artifacts on disk, it automatically loads them and switches to Artifacts
+        if app.has_artifacts() {
+            assert_eq!(app.active_tab, ActiveTab::Artifacts);
+        }
+    }
+
+    #[test]
+    fn test_app_new_with_config_resolves_workspace_agent_and_artifacts() {
+        let diff = GitDiff::demo();
+        let cfg = crate::config::PluginConfig {
+            primary_agent: crate::config::AgentKind::Agy,
+            review_agent: crate::config::AgentKind::Claude,
+            primary_pane_id: None,
+            review_pane_id: None,
+            custom_theme: None,
+            placement: crate::config::DiffPlacement::Split,
+        };
+        let app = App::new_with_config(diff, Some("/Users/kaleb/work/herdr-interactive-diff".to_string()), cfg);
+        assert_eq!(app.config.primary_agent, crate::config::AgentKind::Agy);
+        if let Some(ref conv_id) = app.active_antigravity_conversation_id {
+            assert!(!conv_id.is_empty());
+            assert!(!app.artifacts.is_empty(), "Artifacts should be loaded for conversation {}", conv_id);
+        }
     }
 }

@@ -41,8 +41,31 @@ impl AgentState {
     }
 }
 
+
+/// Represents an active agent detected by Herdr in a pane
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct DetectedAgent {
+    #[serde(default)]
+    pub terminal_id: Option<String>,
+    pub agent: String,
+    pub agent_status: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    pub pane_id: String,
+    #[serde(default)]
+    pub focused: bool,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub foreground_cwd: Option<String>,
+    #[serde(default)]
+    pub agent_session: Option<serde_json::Value>,
+}
+
 /// Native integration client with Herdr (Terminal Workspace Manager for AI Coding Agents).
-/// Manages live status tracking for both Antigravity CLI and Claude Code chats on Weavers pane.
+/// Manages live status tracking and RPC coordination with decoupled agent panes in Herdr.
 #[derive(Clone)]
 pub struct HerdrClient {
     pub socket_path: PathBuf,
@@ -88,20 +111,47 @@ impl HerdrClient {
         }
 
         // 1. Try obtaining pane_id directly from HERDR_PANE_ID env var
-        let pane_id = if let Ok(env_id) = std::env::var("HERDR_PANE_ID") {
-            if !env_id.trim().is_empty() {
-                Some(env_id.trim().to_string())
-            } else {
-                None
-            }
+        let env_pane_id = std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
+        // 2. Discover if current process belongs to a known Herdr pane
+        let (pane_id, is_dedicated_diff_pane) = if let Some(id) = env_pane_id {
+            (id, true)
+        } else if let Some(id) = discover_pane_id(&socket_path) {
+            (id, true)
         } else {
-            None
+            ("cli".to_string(), false)
         };
 
-        // 2. Fallback: Query Herdr socket for the active pane matching current process PID
-        let pane_id = pane_id.or_else(|| discover_pane_id(&socket_path))?;
+        let client = Self::new(socket_path, pane_id);
 
-        Some(Self::new(socket_path, pane_id))
+        // Ensure herdr-interactive-diff is never treated as an AI agent in Herdr's UI or sidebar,
+        // but ONLY if running as a dedicated diff pane (never clear authority on arbitrary or CLI panes)
+        if is_dedicated_diff_pane {
+            let _ = client.call_sync("pane.clear_agent_authority", serde_json::json!({
+                "pane_id": &client.pane_id,
+                "source": "herdr-interactive-diff",
+            }));
+            let _ = client.call_sync("pane.release_agent", serde_json::json!({
+                "pane_id": &client.pane_id,
+                "source": "herdr-interactive-diff",
+                "agent": "agy",
+            }));
+            let _ = client.call_sync("pane.release_agent", serde_json::json!({
+                "pane_id": &client.pane_id,
+                "source": "herdr-interactive-diff",
+                "agent": "claude",
+            }));
+            let _ = client.call_sync("pane.report_metadata", serde_json::json!({
+                "pane_id": &client.pane_id,
+                "source": "herdr-interactive-diff",
+                "clear_display_agent": true,
+                "clear_state_labels": true,
+            }));
+        }
+
+        Some(client)
     }
 }
 
@@ -254,6 +304,120 @@ impl HerdrClient {
     pub fn release_all(&mut self) {
         self.release_agents(&["agy", "claude"]);
     }
+
+    /// Sends a synchronous RPC call to Herdr
+    pub fn call_sync(&self, method: &str, params: serde_json::Value) -> Option<serde_json::Value> {
+        send_herdr_rpc(&self.socket_path, method, params)
+    }
+
+    /// Queries the list of currently active agents from Herdr (agent.list)
+    pub fn list_agents(&self) -> Vec<DetectedAgent> {
+        let resp = match self.call_sync("agent.list", serde_json::json!({})) {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+
+        let agents_val = match resp.get("result").and_then(|r| r.get("agents")) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+
+        let mut agents: Vec<DetectedAgent> = serde_json::from_value(agents_val.clone()).unwrap_or_default();
+        agents.retain(|a| {
+            !a.agent.to_lowercase().contains("diff")
+                && !a.agent.to_lowercase().contains("interactive")
+        });
+        agents
+    }
+
+    /// Queries the currently focused workspace ID in Herdr
+    pub fn get_focused_workspace_id(&self) -> Option<String> {
+        let resp = self.call_sync("workspace.list", serde_json::json!({}))?;
+        let workspaces = resp.get("result")?.get("workspaces")?.as_array()?;
+        for ws in workspaces {
+            if ws.get("focused").and_then(|v| v.as_bool()).unwrap_or(false) {
+                return ws.get("workspace_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    /// Reads output text from a specific Herdr pane
+    pub fn read_pane_text(&self, pane_id: &str, lines: u32) -> Option<String> {
+        let params = serde_json::json!({
+            "pane_id": pane_id,
+            "source": "recent_unwrapped",
+            "lines": lines,
+        });
+        let resp = self.call_sync("pane.read", params)?;
+        resp.get("result")
+            .and_then(|r| r.get("read"))
+            .and_then(|rd| rd.get("text"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Submits a prompt to an agent or pane in Herdr
+    pub fn submit_agent_prompt(&self, target: &str, text: &str) -> anyhow::Result<()> {
+        let params = serde_json::json!({
+            "target": target,
+            "text": text,
+        });
+        let resp = self.call_sync("agent.prompt", params);
+        if let Some(r) = resp {
+            if let Some(err) = r.get("error") {
+                // If agent.prompt rejected, fallback to pane.send_text
+                let _ = self.call_sync("pane.send_text", serde_json::json!({
+                    "pane_id": target,
+                    "text": format!("{}\n", text),
+                }));
+                anyhow::bail!("agent.prompt returned error: {:?}", err);
+            }
+            return Ok(());
+        }
+        // Fallback: send text directly to pane
+        let _ = self.call_sync("pane.send_text", serde_json::json!({
+            "pane_id": target,
+            "text": format!("{}\n", text),
+        }));
+        Ok(())
+    }
+
+    /// Focuses a pane in Herdr
+    pub fn focus_pane(&self, pane_id: &str) -> anyhow::Result<()> {
+        let params = serde_json::json!({
+            "pane_id": pane_id,
+        });
+        let resp = self.call_sync("pane.focus", params).ok_or_else(|| anyhow::anyhow!("Herdr socket not responding"))?;
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("pane.focus error: {:?}", err);
+        }
+        Ok(())
+    }
+
+    /// Focuses an agent in Herdr
+    pub fn focus_agent(&self, target: &str) -> anyhow::Result<()> {
+        let params = serde_json::json!({
+            "target": target,
+        });
+        let resp = self.call_sync("agent.focus", params).ok_or_else(|| anyhow::anyhow!("Herdr socket not responding"))?;
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("agent.focus error: {:?}", err);
+        }
+        Ok(())
+    }
+
+    /// Shows a toast notification via Herdr
+    pub fn show_notification(&self, message: &str) -> anyhow::Result<()> {
+        let params = serde_json::json!({
+            "message": message,
+        });
+        let resp = self.call_sync("notification.show", params).ok_or_else(|| anyhow::anyhow!("Herdr socket not responding"))?;
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("notification.show error: {:?}", err);
+        }
+        Ok(())
+    }
 }
 
 /// Detects the operational state of an agent (Working, Blocked, or Idle) from its live terminal screen
@@ -393,23 +557,46 @@ fn resolve_socket_path() -> Option<PathBuf> {
     None
 }
 
-/// Sends a JSON-RPC request to the Herdr Unix socket
+/// Sends a JSON-RPC request to the Herdr Unix socket and reads the complete response
 fn send_herdr_request(socket_path: &Path, request: &serde_json::Value) -> Option<serde_json::Value> {
     let mut stream = UnixStream::connect(socket_path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(400))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(400))).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_millis(1000))).ok()?;
 
     let mut body = serde_json::to_vec(request).ok()?;
     body.push(b'\n');
     stream.write_all(&body).ok()?;
 
-    let mut response_buf = vec![0u8; 16384];
-    let bytes_read = stream.read(&mut response_buf).ok()?;
-    if bytes_read == 0 {
+    let mut response_buf = Vec::with_capacity(32768);
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                response_buf.extend_from_slice(&chunk[..n]);
+                if response_buf.contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if response_buf.is_empty() {
         return None;
     }
 
-    serde_json::from_slice(&response_buf[..bytes_read]).ok()
+    serde_json::from_slice(&response_buf).ok()
+}
+
+/// Standalone helper to send a JSON-RPC request to Herdr socket
+pub fn send_herdr_rpc(socket_path: &Path, method: &str, params: serde_json::Value) -> Option<serde_json::Value> {
+    let seq = next_seq();
+    let req = serde_json::json!({
+        "id": format!("herdr-diff:standalone:{}", seq),
+        "method": method,
+        "params": params,
+    });
+    send_herdr_request(socket_path, &req)
 }
 
 /// Discovers the current pane ID by inspecting Herdr session snapshot
@@ -453,14 +640,375 @@ fn discover_pane_id(socket_path: &Path) -> Option<String> {
         }
     }
 
-    // Fallback: use focused_pane_id
-    if let Some(focused) = snapshot.get("focused_pane_id").and_then(|v| v.as_str()) {
-        if !focused.is_empty() {
-            return Some(focused.to_string());
+    None
+}
+
+/// Extracts pane ID from a `plugin.pane.open` response
+pub fn extract_plugin_pane_id(response: &serde_json::Value) -> Option<String> {
+    let result = response.get("result")?;
+    // Format 1: result.plugin_pane.pane.pane_id
+    if let Some(id) = result
+        .get("plugin_pane")
+        .and_then(|pp| pp.get("pane"))
+        .and_then(|p| p.get("pane_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // Format 2: result.plugin_pane.pane_id
+    if let Some(id) = result
+        .get("plugin_pane")
+        .and_then(|pp| pp.get("pane_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // Format 3: result.pane.pane_id
+    if let Some(id) = result
+        .get("pane")
+        .and_then(|p| p.get("pane_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // Format 4: result.pane_id
+    if let Some(id) = result.get("pane_id").and_then(|v| v.as_str()) {
+        return Some(id.to_string());
+    }
+    None
+}
+
+/// Helper to extract tab_id from Herdr plugin.pane.open responses
+pub fn extract_plugin_tab_id(resp: &serde_json::Value) -> Option<String> {
+    let result = resp.get("result")?;
+
+    // Format 1: result.plugin_pane.pane.tab_id
+    if let Some(id) = result
+        .get("plugin_pane")
+        .and_then(|pp| pp.get("pane"))
+        .and_then(|p| p.get("tab_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // Format 2: result.tab.tab_id
+    if let Some(id) = result
+        .get("tab")
+        .and_then(|t| t.get("tab_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // Format 3: result.tab_id
+    if let Some(id) = result.get("tab_id").and_then(|v| v.as_str()) {
+        return Some(id.to_string());
+    }
+    None
+}
+
+/// Opens herdr-interactive-diff in a vertical split docked on the left side of the current active pane.
+/// If interactive diff is already running in the current tab/workspace, focuses it instead of opening a duplicate.
+pub fn open_split_left(socket_path_opt: Option<&Path>) -> Result<(), String> {
+    let socket_path = match socket_path_opt {
+        Some(p) => p.to_path_buf(),
+        None => resolve_socket_path().ok_or_else(|| "Could not find Herdr socket".to_string())?,
+    };
+
+    // 1. Query current session snapshot
+    let snap_resp = send_herdr_rpc(&socket_path, "session.snapshot", serde_json::json!({}))
+        .ok_or_else(|| "Failed to query Herdr session snapshot".to_string())?;
+
+    let snapshot = snap_resp.get("result").and_then(|r| r.get("snapshot"));
+    let focused_pane_id = snapshot
+        .and_then(|s| s.get("focused_pane_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let panes = snapshot
+        .and_then(|s| s.get("panes"))
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Determine current tab from focused pane
+    let current_pane = panes
+        .iter()
+        .find(|p| p.get("pane_id").and_then(|v| v.as_str()) == focused_pane_id.as_deref());
+    let current_tab_id = current_pane
+        .and_then(|p| p.get("tab_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Check if an interactive diff pane is already open in the CURRENT tab
+    if let Some(ref cur_tab) = current_tab_id {
+        for p in &panes {
+            if p.get("tab_id").and_then(|v| v.as_str()) == Some(cur_tab.as_str()) {
+                let p_id = p.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
+                let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let label = p.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                if (title.contains("Interactive Diff")
+                    || label.contains("Interactive Diff")
+                    || title.contains("herdr-interactive-diff"))
+                    && !p_id.is_empty()
+                {
+                    let _ = send_herdr_rpc(&socket_path, "pane.focus", serde_json::json!({ "pane_id": p_id }));
+                    return Ok(());
+                }
+            }
         }
     }
 
-    None
+    let focused_ref = focused_pane_id.as_deref().unwrap_or("w1:p1");
+
+    // 2. Query pane layout to find the leftmost pane (x=0) in the current tab
+    let layout_resp = send_herdr_rpc(&socket_path, "pane.layout", serde_json::json!({
+        "pane_id": focused_ref
+    }));
+
+    let layout_panes = layout_resp
+        .as_ref()
+        .and_then(|r| r.get("result"))
+        .and_then(|r| r.get("layout"))
+        .and_then(|l| l.get("panes"))
+        .and_then(|p| p.as_array());
+
+    let leftmost_pane_id = layout_panes
+        .and_then(|arr| {
+            arr.iter().min_by_key(|p| {
+                p.get("rect")
+                    .and_then(|r| r.get("x"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0)
+            })
+        })
+        .and_then(|p| p.get("pane_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(focused_ref);
+
+    // 3. Open plugin pane in split to the right of the leftmost pane
+    let open_resp = send_herdr_rpc(
+        &socket_path,
+        "plugin.pane.open",
+        serde_json::json!({
+            "plugin_id": "herdr-interactive-diff",
+            "entrypoint": "diff",
+            "placement": "split",
+            "target_pane_id": leftmost_pane_id,
+            "direction": "right",
+            "focus": true
+        }),
+    )
+    .ok_or_else(|| "Failed to execute plugin.pane.open via Herdr socket".to_string())?;
+
+    if let Some(err) = open_resp.get("error") {
+        return Err(format!("Herdr error opening plugin pane: {:?}", err));
+    }
+
+    let new_pane_id = extract_plugin_pane_id(&open_resp)
+        .ok_or_else(|| format!("plugin.pane.open did not return a pane ID: {:?}", open_resp))?;
+
+    // 4. Swap new pane with the leftmost pane so new pane becomes the leftmost (x=0)!
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.swap",
+        serde_json::json!({
+            "source_pane_id": &new_pane_id,
+            "target_pane_id": leftmost_pane_id
+        }),
+    );
+
+    // 5. Ensure the new pane has focus
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.focus",
+        serde_json::json!({
+            "pane_id": &new_pane_id
+        }),
+    );
+
+    // 6. Release any agent authority on the new pane so it is never treated as an AI agent in Herdr
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.clear_agent_authority",
+        serde_json::json!({
+            "pane_id": &new_pane_id,
+            "source": "herdr-interactive-diff",
+        }),
+    );
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.report_metadata",
+        serde_json::json!({
+            "pane_id": &new_pane_id,
+            "source": "herdr-interactive-diff",
+            "clear_display_agent": true,
+            "clear_state_labels": true,
+        }),
+    );
+
+    Ok(())
+}
+
+/// Opens herdr-interactive-diff in a new tab in the current workspace.
+/// If interactive diff is already open in the current workspace, focuses it instead of opening a duplicate.
+pub fn open_tab(socket_path_opt: Option<&Path>) -> Result<(), String> {
+    let socket_path = match socket_path_opt {
+        Some(p) => p.to_path_buf(),
+        None => resolve_socket_path().ok_or_else(|| "Could not find Herdr socket".to_string())?,
+    };
+
+    // 1. Query current session snapshot
+    let snap_resp = send_herdr_rpc(&socket_path, "session.snapshot", serde_json::json!({}))
+        .ok_or_else(|| "Failed to query Herdr session snapshot".to_string())?;
+
+    let snapshot = snap_resp.get("result").and_then(|r| r.get("snapshot"));
+    let focused_pane_id = snapshot
+        .and_then(|s| s.get("focused_pane_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let panes = snapshot
+        .and_then(|s| s.get("panes"))
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let tabs = snapshot
+        .and_then(|s| s.get("tabs"))
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Determine current workspace from focused pane (e.g. "w1W:pA" -> "w1W")
+    let current_ws = focused_pane_id
+        .as_ref()
+        .and_then(|id| id.split(':').next());
+
+    // Check if an interactive diff pane is already open in the current workspace
+    for p in &panes {
+        let p_id = p.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
+        let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let label = p.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        let p_tab_id = p.get("tab_id").and_then(|v| v.as_str()).unwrap_or("");
+        let ws_match = current_ws.map(|ws| p_id.starts_with(ws)).unwrap_or(true);
+
+        if ws_match
+            && (title.contains("Interactive Diff")
+                || label.contains("Interactive Diff")
+                || title.contains("herdr-interactive-diff"))
+            && !p_id.is_empty()
+        {
+            // Check if this pane is in a dedicated tab (pane_count == 1)
+            let is_dedicated_tab = tabs.iter().any(|t| {
+                t.get("tab_id").and_then(|v| v.as_str()) == Some(p_tab_id)
+                    && t.get("pane_count").and_then(|v| v.as_u64()).unwrap_or(0) == 1
+            });
+
+            if is_dedicated_tab {
+                // Focus the existing dedicated tab and pane
+                if !p_tab_id.is_empty() {
+                    let _ = send_herdr_rpc(&socket_path, "tab.focus", serde_json::json!({ "tab_id": p_tab_id }));
+                }
+                let _ = send_herdr_rpc(&socket_path, "pane.focus", serde_json::json!({ "pane_id": p_id }));
+                return Ok(());
+            } else {
+                // It was open in a split; close the obsolete split pane so it transitions cleanly to a dedicated tab
+                let _ = send_herdr_rpc(&socket_path, "pane.close", serde_json::json!({ "pane_id": p_id }));
+            }
+        }
+    }
+
+    // 2. Open plugin pane in tab placement via Herdr plugin runtime
+    let open_resp = send_herdr_rpc(
+        &socket_path,
+        "plugin.pane.open",
+        serde_json::json!({
+            "plugin_id": "herdr-interactive-diff",
+            "entrypoint": "diff-tab",
+            "placement": "tab",
+            "focus": true
+        }),
+    )
+    .ok_or_else(|| "Failed to execute plugin.pane.open via Herdr socket".to_string())?;
+
+    let (new_pane_id, new_tab_id) = if let Some(id) = extract_plugin_pane_id(&open_resp) {
+        (id, extract_plugin_tab_id(&open_resp))
+    } else {
+        // Fallback: try entrypoint "diff" with placement "tab"
+        let fallback_resp = send_herdr_rpc(
+            &socket_path,
+            "plugin.pane.open",
+            serde_json::json!({
+                "plugin_id": "herdr-interactive-diff",
+                "entrypoint": "diff",
+                "placement": "tab",
+                "focus": true
+            }),
+        );
+        match fallback_resp.as_ref().and_then(extract_plugin_pane_id) {
+            Some(id) => {
+                let tab_id = fallback_resp.as_ref().and_then(extract_plugin_tab_id);
+                (id, tab_id)
+            }
+            None => {
+                if let Some(err) = open_resp.get("error") {
+                    return Err(format!("Herdr error opening plugin tab: {:?}", err));
+                }
+                return Err("Failed to obtain pane ID when opening tab".to_string());
+            }
+        }
+    };
+
+    // 3. Ensure both the newly created tab and pane have active focus in Herdr
+    if let Some(ref t_id) = new_tab_id {
+        let _ = send_herdr_rpc(
+            &socket_path,
+            "tab.focus",
+            serde_json::json!({
+                "tab_id": t_id
+            }),
+        );
+    }
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.focus",
+        serde_json::json!({
+            "pane_id": &new_pane_id
+        }),
+    );
+
+    // 4. Release any agent authority on the new pane
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.clear_agent_authority",
+        serde_json::json!({
+            "pane_id": &new_pane_id,
+            "source": "herdr-interactive-diff",
+        }),
+    );
+    let _ = send_herdr_rpc(
+        &socket_path,
+        "pane.report_metadata",
+        serde_json::json!({
+            "pane_id": &new_pane_id,
+            "source": "herdr-interactive-diff",
+            "clear_display_agent": true,
+            "clear_state_labels": true,
+        }),
+    );
+
+    Ok(())
+}
+
+/// Opens herdr-interactive-diff according to configured placement (Split or Tab)
+pub fn open_diff_with_placement(
+    socket_path_opt: Option<&Path>,
+    placement: crate::config::DiffPlacement,
+) -> Result<(), String> {
+    match placement {
+        crate::config::DiffPlacement::Split => open_split_left(socket_path_opt),
+        crate::config::DiffPlacement::Tab => open_tab(socket_path_opt),
+    }
 }
 
 #[cfg(test)]
@@ -594,5 +1142,86 @@ mod tests {
         let clear = rx.recv().expect("clear authority message");
         assert_eq!(clear["method"], "pane.clear_agent_authority");
         assert_eq!(clear["params"]["source"], "herdr-interactive-diff");
+    }
+
+    #[test]
+    fn test_extract_plugin_pane_id() {
+        let resp1 = serde_json::json!({
+            "result": {
+                "plugin_pane": {
+                    "pane": {
+                        "pane_id": "w1:p3"
+                    }
+                }
+            }
+        });
+        assert_eq!(extract_plugin_pane_id(&resp1), Some("w1:p3".to_string()));
+
+        let resp2 = serde_json::json!({
+            "result": {
+                "pane_id": "w2:p5"
+            }
+        });
+        assert_eq!(extract_plugin_pane_id(&resp2), Some("w2:p5".to_string()));
+    }
+
+    #[test]
+    fn test_extract_plugin_tab_id() {
+        let resp1 = serde_json::json!({
+            "result": {
+                "plugin_pane": {
+                    "entrypoint": "diff-tab",
+                    "pane": {
+                        "pane_id": "w1W:pY",
+                        "tab_id": "w1W:tA"
+                    }
+                }
+            }
+        });
+        assert_eq!(extract_plugin_tab_id(&resp1), Some("w1W:tA".to_string()));
+
+        let resp2 = serde_json::json!({
+            "result": {
+                "tab": {
+                    "tab_id": "w2:t3"
+                }
+            }
+        });
+        assert_eq!(extract_plugin_tab_id(&resp2), Some("w2:t3".to_string()));
+
+        let resp3 = serde_json::json!({
+            "result": {
+                "tab_id": "w3:t7"
+            }
+        });
+        assert_eq!(extract_plugin_tab_id(&resp3), Some("w3:t7".to_string()));
+    }
+
+    #[test]
+    fn test_detected_agent_deserialization() {
+        let json_data = serde_json::json!({
+            "agents": [
+                {
+                    "pane_id": "w1W:p2",
+                    "agent": "agy",
+                    "agent_status": "working",
+                    "cwd": "/path/to/repo"
+                },
+                {
+                    "pane_id": "w1W:p3",
+                    "agent": "claude",
+                    "agent_status": "idle"
+                }
+            ]
+        });
+
+        let agents: Vec<DetectedAgent> = serde_json::from_value(json_data["agents"].clone()).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].pane_id, "w1W:p2");
+        assert_eq!(agents[0].agent, "agy");
+        assert_eq!(agents[0].agent_status, "working");
+        assert_eq!(agents[0].cwd.as_deref(), Some("/path/to/repo"));
+        assert_eq!(agents[1].pane_id, "w1W:p3");
+        assert_eq!(agents[1].agent, "claude");
     }
 }

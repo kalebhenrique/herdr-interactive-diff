@@ -97,6 +97,7 @@ impl AgentKind {
     }
 
     /// Binary command line executable name to spawn
+    #[allow(dead_code)]
     pub fn command_bin(&self) -> &'static str {
         match self {
             AgentKind::Agy => "agy",
@@ -173,13 +174,63 @@ impl std::fmt::Display for AgentKind {
     }
 }
 
+/// Placement mode when opening Interactive Diff in Herdr
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffPlacement {
+    Split,
+    Tab,
+}
+
+impl DiffPlacement {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().trim() {
+            "split" | "split-left" | "split_left" | "vertical" | "left" | "1" => Some(DiffPlacement::Split),
+            "tab" | "new-tab" | "new_tab" | "newtab" | "2" => Some(DiffPlacement::Tab),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DiffPlacement::Split => "split",
+            DiffPlacement::Tab => "tab",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            DiffPlacement::Split => "Vertical Split (Left)",
+            DiffPlacement::Tab => "New Tab",
+        }
+    }
+}
+
+impl Default for DiffPlacement {
+    fn default() -> Self {
+        DiffPlacement::Split
+    }
+}
+
+impl std::fmt::Display for DiffPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Persistent configuration for Herdr Interactive Diff AI agents
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginConfig {
     pub primary_agent: AgentKind,
     pub review_agent: AgentKind,
     #[serde(default)]
+    pub primary_pane_id: Option<String>,
+    #[serde(default)]
+    pub review_pane_id: Option<String>,
+    #[serde(default)]
     pub custom_theme: Option<String>,
+    #[serde(default)]
+    pub placement: DiffPlacement,
 }
 
 pub type WeaversConfig = PluginConfig;
@@ -189,7 +240,10 @@ impl Default for PluginConfig {
         Self {
             primary_agent: AgentKind::Agy,
             review_agent: AgentKind::Claude,
+            primary_pane_id: None,
+            review_pane_id: None,
             custom_theme: None,
+            placement: DiffPlacement::Split,
         }
     }
 }
@@ -206,6 +260,13 @@ pub fn get_config_path() -> PathBuf {
         return PathBuf::from(config_dir).join("config.json");
     }
     if let Ok(home) = std::env::var("HOME") {
+        // Herdr standard plugin config directory
+        let herdr_plugin_cfg = PathBuf::from(&home)
+            .join(".config/herdr/plugins/config/herdr-interactive-diff/config.json");
+        if herdr_plugin_cfg.exists() {
+            return herdr_plugin_cfg;
+        }
+
         let p = PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json");
         if p.exists() {
             return p;
@@ -214,7 +275,13 @@ pub fn get_config_path() -> PathBuf {
         if legacy.exists() {
             return legacy;
         }
-        return p;
+
+        let herdr_plugin_dir = PathBuf::from(&home)
+            .join(".config/herdr/plugins/config/herdr-interactive-diff");
+        if herdr_plugin_dir.exists() {
+            return herdr_plugin_cfg;
+        }
+        return legacy;
     }
     PathBuf::from(".herdr-interactive-diff/config.json")
 }
@@ -232,19 +299,58 @@ pub fn load_config() -> PluginConfig {
             return cfg;
         }
     }
+    // Fallback: check mirror paths if primary had invalid or missing content
+    if let Ok(home) = std::env::var("HOME") {
+        let mirrors = [
+            PathBuf::from(&home).join(".config/herdr/plugins/config/herdr-interactive-diff/config.json"),
+            PathBuf::from(&home).join(".config/weavers/config.json"),
+            PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json"),
+        ];
+        for mirror in mirrors {
+            if mirror != path {
+                if let Ok(content) = fs::read_to_string(&mirror) {
+                    if let Ok(cfg) = serde_json::from_str::<PluginConfig>(&content) {
+                        return cfg;
+                    }
+                }
+            }
+        }
+    }
     PluginConfig::default()
 }
 
 /// Saves configuration to disk
 pub fn save_config(cfg: &PluginConfig) -> Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
     let path = get_config_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let json = serde_json::to_string_pretty(cfg)
         .context("Failed to serialize configuration to JSON")?;
-    fs::write(&path, json)
+    fs::write(&path, &json)
         .with_context(|| format!("Failed to write configuration to {}", path.display()))?;
+
+    // Mirror to standard locations so Herdr actions and CLI shell invocations stay 100% in sync
+    if let Ok(home) = std::env::var("HOME") {
+        let mirrors = [
+            PathBuf::from(&home).join(".config/herdr/plugins/config/herdr-interactive-diff/config.json"),
+            PathBuf::from(&home).join(".config/weavers/config.json"),
+            PathBuf::from(&home).join(".config/herdr-interactive-diff/config.json"),
+        ];
+        for mirror in mirrors {
+            if mirror != path {
+                if let Some(parent) = mirror.parent() {
+                    if parent.exists() {
+                        let _ = fs::write(&mirror, &json);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -255,8 +361,9 @@ pub fn print_config() {
     println!("\n  󰚩 HERDR INTERACTIVE DIFF CONFIGURATION");
     println!("  Path: {}", path.display());
     println!("  --------------------------------------------------");
-    println!("  • Primary agent: {}", cfg.primary_agent.display_name());
-    println!("  • Review agent:  {}", cfg.review_agent.display_name());
+    println!("  • Primary agent:  {}", cfg.primary_agent.display_name());
+    println!("  • Review agent:   {}", cfg.review_agent.display_name());
+    println!("  • Diff placement: {}", cfg.placement.display_name());
     if let Some(t) = &cfg.custom_theme {
         println!("  • Theme override: {}", t);
     }
@@ -264,7 +371,8 @@ pub fn print_config() {
     println!("                   kimi, opencode, kilo, hermes, qodercli, qwen,");
     println!("                   cursor, mastracode, antigravity (agy), grok\n");
     println!("  Use 'herdr-interactive-diff -s <agent>' to set primary agent");
-    println!("  Use 'herdr-interactive-diff -r <agent>' to set review agent\n");
+    println!("  Use 'herdr-interactive-diff -r <agent>' to set review agent");
+    println!("  Use 'herdr-interactive-diff --placement <split|tab>' to set placement\n");
 }
 
 /// Prompts the user interactively in the terminal on first run
@@ -337,16 +445,30 @@ pub fn prompt_first_time_setup() -> Result<PluginConfig> {
         },
     };
 
+    println!("\n  3. Choose Diff Placement (where to open on <prefix>+f):");
+    println!("     [1] Vertical Split on the left (split) [default]");
+    println!("     [2] New Tab (tab)");
+    print!("  Enter choice [1-2] (default 1): ");
+    let _ = io::stdout().flush();
+
+    let mut line3 = String::new();
+    let _ = reader.read_line(&mut line3);
+    let placement = DiffPlacement::parse(line3.trim()).unwrap_or(DiffPlacement::Split);
+
     let config = PluginConfig {
         primary_agent: primary,
         review_agent: review,
+        primary_pane_id: None,
+        review_pane_id: None,
         custom_theme: None,
+        placement,
     };
 
     save_config(&config)?;
     println!("\n  ✔ Configuration saved to {}", get_config_path().display());
     println!("    • Primary AI: {}", config.primary_agent.display_name());
     println!("    • Review AI:  {}", config.review_agent.display_name());
+    println!("    • Placement:  {}", config.placement.display_name());
     println!("  Launching...\n");
     std::thread::sleep(std::time::Duration::from_millis(400));
 
@@ -356,6 +478,33 @@ pub fn prompt_first_time_setup() -> Result<PluginConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_diff_placement_serialization_and_parsing() {
+        assert_eq!(DiffPlacement::parse("split"), Some(DiffPlacement::Split));
+        assert_eq!(DiffPlacement::parse("split-left"), Some(DiffPlacement::Split));
+        assert_eq!(DiffPlacement::parse("vertical"), Some(DiffPlacement::Split));
+        assert_eq!(DiffPlacement::parse("1"), Some(DiffPlacement::Split));
+        assert_eq!(DiffPlacement::parse("tab"), Some(DiffPlacement::Tab));
+        assert_eq!(DiffPlacement::parse("new-tab"), Some(DiffPlacement::Tab));
+        assert_eq!(DiffPlacement::parse("2"), Some(DiffPlacement::Tab));
+        assert_eq!(DiffPlacement::parse("unknown"), None);
+
+        let config = PluginConfig {
+            primary_agent: AgentKind::Agy,
+            review_agent: AgentKind::Claude,
+            primary_pane_id: None,
+            review_pane_id: None,
+            custom_theme: None,
+            placement: DiffPlacement::Tab,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"placement\":\"tab\""));
+
+        let deserialized: PluginConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.placement, DiffPlacement::Tab);
+    }
 
     #[test]
     fn test_all_17_agents_parse() {
@@ -382,5 +531,28 @@ mod tests {
         for (name, expected_kind) in expected {
             assert_eq!(AgentKind::parse(name), Some(expected_kind), "Failed for {}", name);
         }
+    }
+
+    #[test]
+    fn test_plugin_config_serialization_preserves_pane_ids() {
+        let config = PluginConfig {
+            primary_agent: AgentKind::Agy,
+            review_agent: AgentKind::Claude,
+            primary_pane_id: Some("w1W:pA".to_string()),
+            review_pane_id: Some("w1W:pB".to_string()),
+            custom_theme: Some("kanagawa".to_string()),
+            placement: DiffPlacement::Split,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"primary_pane_id\":\"w1W:pA\""));
+        assert!(json.contains("\"review_pane_id\":\"w1W:pB\""));
+
+        let deserialized: PluginConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.primary_pane_id.as_deref(), Some("w1W:pA"));
+        assert_eq!(deserialized.review_pane_id.as_deref(), Some("w1W:pB"));
+        assert_eq!(deserialized.primary_agent, AgentKind::Agy);
+        assert_eq!(deserialized.review_agent, AgentKind::Claude);
+        assert_eq!(deserialized.placement, DiffPlacement::Split);
     }
 }

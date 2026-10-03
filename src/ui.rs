@@ -5,14 +5,12 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
     Frame,
 };
-use tui_term::widget::PseudoTerminal;
 
 use crate::ai_engine::ComplexityLevel;
 use crate::app::{
     ActiveTab, App, ArtifactPaneFocus, CodeLineDisplay, DiffPaneFocus, TooltipData, TooltipKind,
 };
 use crate::git::LineOrigin;
-use crate::terminal_session::TerminalSession;
 
 /// Renders the complete Weavers interface in English with Nerd Fonts
 pub fn render_ui(f: &mut Frame, app: &mut App, list_state: &mut ListState) {
@@ -20,22 +18,15 @@ pub fn render_ui(f: &mut Frame, app: &mut App, list_state: &mut ListState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Top Bar (Tabs + weavers repo info on right)
-            Constraint::Min(5),    // Main content (Agents, Git Diff, or Artifacts)
+            Constraint::Min(5),    // Main content (Git Diff or Artifacts)
         ])
         .split(f.area());
 
     render_top_bar(f, app, chunks[0]);
 
     match app.active_tab {
-        ActiveTab::Agents => render_agents_view(f, app, chunks[1]),
         ActiveTab::GitDiff => render_git_diff_view(f, app, list_state, chunks[1]),
-        ActiveTab::Artifacts => {
-            if app.has_artifacts() {
-                render_artifacts_view(f, app, chunks[1]);
-            } else {
-                render_agents_view(f, app, chunks[1]);
-            }
-        }
+        ActiveTab::Artifacts => render_artifacts_view(f, app, chunks[1]),
     }
 
     // AI Question overlay input bar when user presses '?'
@@ -64,21 +55,15 @@ pub fn render_ui(f: &mut Frame, app: &mut App, list_state: &mut ListState) {
 /// Top bar with tab selector on left and "herdr-interactive-diff • repo • Ctrl+H for help" on the right.
 fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette;
-    let titles = if app.has_artifacts() {
-        vec![" [1] 󰚩 Agents ", " [2] 󰊢 Git Diff ", " [3] 󰈙 Artifacts "]
+    let show_artifacts_tab = app.has_artifacts() || app.active_tab == ActiveTab::Artifacts;
+    let titles = if show_artifacts_tab {
+        vec![" [1] 󰊢 Git Diff ", " [2] 󰈙 Artifacts "]
     } else {
-        vec![" [1] 󰚩 Agents ", " [2] 󰊢 Git Diff "]
+        vec![" [1] 󰊢 Git Diff "]
     };
     let selected_index = match app.active_tab {
-        ActiveTab::Agents => 0,
-        ActiveTab::GitDiff => 1,
-        ActiveTab::Artifacts => {
-            if app.has_artifacts() {
-                2
-            } else {
-                0
-            }
-        }
+        ActiveTab::GitDiff => 0,
+        ActiveTab::Artifacts => 1,
     };
 
     let repo_info = if area.width >= 75 {
@@ -164,118 +149,7 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, inner_area);
 }
 
-/// Tab 1: Interactive terminal view.
-/// Initially shows ONLY Antigravity CLI at full width.
-/// Claude Code chat opens in split view when user presses Ctrl+R.
-/// Renders a single interactive terminal agent panel
-fn render_single_agent_panel(
-    f: &mut Frame,
-    kind: crate::config::AgentKind,
-    session: Option<&mut TerminalSession>,
-    is_focused: bool,
-    area: Rect,
-    pal: crate::theme::Palette,
-) {
-    let cmd = kind.command_bin();
-    let is_alive = session.as_ref().map(|s| s.is_alive()).unwrap_or(false);
-
-    let border_style = if !is_alive && session.is_some() {
-        Style::default().fg(pal.red)
-    } else if is_focused {
-        Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(pal.surface1)
-    };
-
-    let scroll = session.as_ref().map(|s| s.scroll_offset()).unwrap_or(0);
-    let title_span = if !is_alive && session.is_some() {
-        Span::styled(
-            format!(" {} [STOPPED - Press Enter/Ctrl+O to restart] ", cmd),
-            Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
-        )
-    } else if scroll > 0 {
-        Span::styled(
-            format!(" {} [Scroll: +{} lines] [PageDown to return] ", cmd, scroll),
-            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        let style = if is_focused {
-            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(pal.subtext0)
-        };
-        Span::styled(format!(" {} ", cmd), style)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .title(title_span);
-
-    if let Some(s) = session {
-        let inner_area = block.inner(area);
-        s.resize(inner_area.height, inner_area.width);
-        if let Ok(p) = s.parser.lock() {
-            let term = PseudoTerminal::new(p.screen()).block(block);
-            f.render_widget(term, area);
-            return;
-        }
-    }
-
-    let fallback = Paragraph::new(format!(
-        "'{}' terminal not started or terminated.\nPress [Enter] or [Ctrl+O] to start the session.",
-        cmd
-    ))
-    .block(block);
-    f.render_widget(fallback, area);
-}
-
-/// Tab 1: Interactive terminal view.
-/// Shows primary agent at full width (100%) initially.
-/// Opens review agent in split view (50/50) when user presses Ctrl+R.
-/// Zero footer, zero clutter.
-fn render_agents_view(f: &mut Frame, app: &mut App, area: Rect) {
-    let pal = app.palette;
-    if app.show_review_agent {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-
-        let is_primary_focused = app.agent_focus == crate::app::AgentFocus::Antigravity;
-        let is_review_focused = app.agent_focus == crate::app::AgentFocus::Claude;
-
-        render_single_agent_panel(
-            f,
-            app.config.primary_agent,
-            app.agy_session.as_mut(),
-            is_primary_focused,
-            chunks[0],
-            pal,
-        );
-
-        render_single_agent_panel(
-            f,
-            app.config.review_agent,
-            app.claude_session.as_mut(),
-            is_review_focused,
-            chunks[1],
-            pal,
-        );
-    } else {
-        render_single_agent_panel(
-            f,
-            app.config.primary_agent,
-            app.agy_session.as_mut(),
-            true,
-            area,
-            pal,
-        );
-    }
-}
-
-/// Tab 2: Git Diff view with file drawer + diff/full-file viewer + floating tooltips
+/// Tab 1: Git Diff view with file drawer + diff/full-file viewer + floating tooltips
 fn render_git_diff_view(f: &mut Frame, app: &mut App, list_state: &mut ListState, area: Rect) {
     if app.diff.files.is_empty() {
         let repo_name = app
@@ -1210,32 +1084,25 @@ fn render_help_modal(f: &mut Frame, app: &App) {
                 "  Mouse Click    ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Click tabs at top ([1] Agents / [2] Git Diff / [3] Artifacts)"),
+            Span::raw("Click tabs at top ([1] Git Diff / [2] Artifacts)"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  1 / F1         ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch to [1] Agents"),
+            Span::raw("Switch to [1] Git Diff"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  2 / F2         ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch to [2] Git Diff"),
+            Span::raw("Switch to [2] Artifacts (when available)"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  3 / F3         ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Switch to [3] Artifacts (when available)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl+T         ",
+                "  Ctrl+T / Tab   ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Cycle between active tabs"),
@@ -1245,18 +1112,25 @@ fn render_help_modal(f: &mut Frame, app: &App) {
                 "  Ctrl+A         ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch AI Model / Agent (choose from 17 supported agents)"),
+            Span::raw("Select Primary and Review AI from active Herdr agents"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl+R         ",
+                Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Submit 5-Lens Code Review to Review AI pane"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  Ctrl+S         ",
                 Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Copy Review AI output to Primary AI for validation"),
+            Span::raw("Submit Review AI output to Primary AI for validation"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+H / ?     ",
+                "  Ctrl+H         ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle this help menu"),
@@ -1270,69 +1144,55 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "󰚩 TAB 1: AI AGENTS TERMINAL",
+            "󰚩 HERDR DECOUPLED AGENTS WORKFLOW",
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+R         ",
+                "  <prefix>+f     ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open herdr-interactive-diff on the left split"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  <prefix>+a     ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Focus Primary AI pane in Herdr"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  <prefix>+c     ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Focus Review AI pane in Herdr"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  <prefix>+r     ",
                 Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle Review AI split view (50/50 split) / Close Review AI"),
+            Span::raw("Trigger 5-Lens Code Review (submits diff to Review AI)"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+S         ",
+                "  <prefix>+s     ",
                 Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Copy Review AI output to Primary AI (Anti-overengineering validation)"),
+            Span::raw("Trigger Anti-Overengineering Validation (submits review to Primary AI)"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+O / Ctrl+W",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Switch keyboard focus between Primary and Review AI panels"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Click    ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Focus clicked AI panel (left = Primary, right = Review)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Scroll   ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Scroll up/down in active terminal scrollback history"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Drag     ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Native terminal text selection (Cmd+C to copy)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl+V         ",
+                "  ?              ",
                 Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Paste text from system clipboard into focused AI terminal"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Tab            ",
-                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Sent directly to AI CLI for autocomplete (never captured)"),
+            Span::raw("Ask Primary AI a question about selected diff hunk"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "󰊢 TAB 2: GIT DIFF & REVIEW COMMENTS",
+            "󰊢 TAB 1: GIT DIFF & REVIEW COMMENTS",
             Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
         )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
@@ -1362,7 +1222,7 @@ fn render_help_modal(f: &mut Frame, app: &App) {
                 "  ?              ",
                 Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Ask focused AI a question about selected diff hunk"),
+            Span::raw("Ask Primary AI a question about selected diff hunk"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1394,13 +1254,6 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+S         ",
-                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Send current review/diff to Primary AI for validation"),
-        ]),
-        Line::from(vec![
-            Span::styled(
                 "  r / F5         ",
                 Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
             ),
@@ -1408,7 +1261,7 @@ fn render_help_modal(f: &mut Frame, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "󰈙 TAB 3: WORKSPACE & AI ARTIFACTS",
+            "󰈙 TAB 2: WORKSPACE & AI ARTIFACTS",
             Style::default().fg(pal.teal).add_modifier(Modifier::BOLD),
         )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
@@ -1575,8 +1428,8 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
     let pal = app.palette;
     let area = f.area();
 
-    let width = 56.min(area.width.saturating_sub(4));
-    let height = 24.min(area.height.saturating_sub(4));
+    let width = 78.min(area.width.saturating_sub(4));
+    let height = 20.min(area.height.saturating_sub(4));
 
     let modal_area = Rect {
         x: (area.width.saturating_sub(width)) / 2,
@@ -1587,9 +1440,11 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, modal_area);
 
-    let title_text = match app.agent_picker_target {
-        crate::app::AgentPickerTarget::Primary => "Select Primary AI",
-        crate::app::AgentPickerTarget::Review => "Select Review AI",
+    let is_primary = app.agent_picker_target == crate::app::AgentPickerTarget::Primary;
+    let title_text = if is_primary {
+        "Assign Primary AI (Herdr Agent / Pane)"
+    } else {
+        "Assign Review AI (Herdr Agent / Pane)"
     };
 
     let block = Block::default()
@@ -1597,14 +1452,29 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(pal.accent))
         .title(Span::styled(
-            format!(" {} ", title_text),
+            format!(" 󰚩 {} ", title_text),
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         ))
-        .title(
-            Line::from(vec![Span::styled(
-                "[Enter] Select • [Esc] Close ",
-                Style::default().fg(pal.overlay0),
-            )])
+        .title_bottom(
+            Line::from(vec![
+                Span::styled(
+                    " [Tab] ",
+                    Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Role ", Style::default().fg(pal.subtext0)),
+                Span::styled("• ", Style::default().fg(pal.overlay0)),
+                Span::styled(
+                    "[Enter] ",
+                    Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Assign ", Style::default().fg(pal.subtext0)),
+                Span::styled("• ", Style::default().fg(pal.overlay0)),
+                Span::styled(
+                    "[Esc] ",
+                    Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Close ", Style::default().fg(pal.subtext0)),
+            ])
             .alignment(ratatui::layout::Alignment::Right),
         );
 
@@ -1615,16 +1485,27 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2), // Target switcher row
-            Constraint::Min(3),    // List of agents
-        ])
-        .split(inner);
+    let has_footer = inner.height >= 7;
+    let chunks = if has_footer {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // Target switcher row
+                Constraint::Min(3),    // List of detected agents
+                Constraint::Length(1), // Footer actions bar
+            ])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // Target switcher row
+                Constraint::Min(3),    // List of detected agents
+            ])
+            .split(inner)
+    };
 
     // Target switcher row
-    let is_primary = app.agent_picker_target == crate::app::AgentPickerTarget::Primary;
     let primary_style = if is_primary {
         Style::default()
             .fg(pal.panel_bg)
@@ -1642,52 +1523,123 @@ fn render_agent_picker_modal(f: &mut Frame, app: &App) {
         Style::default().fg(pal.subtext0)
     };
 
+    let primary_indicator = if is_primary { "▶ " } else { "  " };
+    let review_indicator = if !is_primary { "▶ " } else { "  " };
+
+    let primary_desc = match &app.primary_pane_id {
+        Some(pane) => format!(
+            "pane {} ({})",
+            pane,
+            app.config.primary_agent.display_name()
+        ),
+        None => format!("{} (auto)", app.config.primary_agent.display_name()),
+    };
+    let review_desc = match &app.review_pane_id {
+        Some(pane) => format!("pane {} ({})", pane, app.config.review_agent.display_name()),
+        None => format!("{} (auto)", app.config.review_agent.display_name()),
+    };
+
     let target_line = Line::from(vec![
         Span::styled(
-            format!(" Primary: {} ", app.config.primary_agent.display_name()),
+            format!(" {}{}: {} ", primary_indicator, "Primary AI", primary_desc),
             primary_style,
         ),
-        Span::raw("  "),
+        Span::raw("   "),
         Span::styled(
-            format!(" Review: {} ", app.config.review_agent.display_name()),
+            format!(" {}{}: {} ", review_indicator, "Review AI", review_desc),
             review_style,
         ),
     ]);
     f.render_widget(Paragraph::new(target_line), chunks[0]);
 
-    // List of all 17 agents
-    let current_configured = match app.agent_picker_target {
-        crate::app::AgentPickerTarget::Primary => app.config.primary_agent,
-        crate::app::AgentPickerTarget::Review => app.config.review_agent,
-    };
+    if app.detected_agents.is_empty() {
+        let empty_msg = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No active AI agents detected in Herdr.",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  Launch an agent (e.g. agy, claude) in a Herdr pane or check socket.",
+                Style::default().fg(pal.subtext0),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Defaulting to configured: Primary = agy, Review = claude.",
+                Style::default().fg(pal.overlay0),
+            )),
+        ];
+        f.render_widget(Paragraph::new(empty_msg), chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .detected_agents
+            .iter()
+            .enumerate()
+            .map(|(idx, agent)| {
+                let is_cursor = idx == app.agent_picker_idx;
+                let is_selected_primary = app.primary_pane_id.as_deref() == Some(&agent.pane_id);
+                let is_selected_review = app.review_pane_id.as_deref() == Some(&agent.pane_id);
 
-    let items: Vec<ListItem> = crate::config::ALL_AGENTS
-        .iter()
-        .enumerate()
-        .map(|(idx, &agent)| {
-            let is_cursor = idx == app.agent_picker_idx;
-            let is_active = agent == current_configured;
+                let status_symbol =
+                    if agent.agent_status == "active" || agent.agent_status.contains("busy") {
+                        "●"
+                    } else {
+                        "○"
+                    };
 
-            let check_mark = if is_active { "✔ " } else { "  " };
-            let text = format!("{} {}", check_mark, agent.display_name());
+                let mut role_tags = Vec::new();
+                if is_selected_primary {
+                    role_tags.push("[PRIMARY]");
+                }
+                if is_selected_review {
+                    role_tags.push("[REVIEW]");
+                }
+                let role_str = if role_tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", role_tags.join(" "))
+                };
 
-            let style = if is_cursor {
-                Style::default()
-                    .fg(pal.panel_bg)
-                    .bg(pal.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_active {
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(pal.text)
-            };
+                let cwd_display = agent
+                    .cwd
+                    .as_deref()
+                    .or(agent.foreground_cwd.as_deref())
+                    .map(|p| {
+                        let name = p.split('/').rfind(|s| !s.is_empty()).unwrap_or(p);
+                        format!(" ({})", name)
+                    })
+                    .unwrap_or_default();
 
-            ListItem::new(Line::from(Span::styled(text, style)))
-        })
-        .collect();
+                let line_str = format!(
+                    "{} {} [pane {}] - {}{}{}",
+                    status_symbol,
+                    agent.agent,
+                    agent.pane_id,
+                    agent.agent_status,
+                    cwd_display,
+                    role_str
+                );
 
-    let list = List::new(items);
-    f.render_widget(list, chunks[1]);
+                let style = if is_cursor {
+                    Style::default()
+                        .fg(pal.panel_bg)
+                        .bg(pal.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_selected_primary {
+                    Style::default().fg(pal.green).add_modifier(Modifier::BOLD)
+                } else if is_selected_review {
+                    Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(pal.text)
+                };
+
+                ListItem::new(Line::from(Span::styled(line_str, style)))
+            })
+            .collect();
+
+        let list = List::new(items);
+        f.render_widget(list, chunks[1]);
+    }
 }
 
 #[cfg(test)]
@@ -1922,13 +1874,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = format!("{:?}", buffer);
 
-        // Even at narrow width, all three tabs must be rendered without truncation or dropping
+        // Even at narrow width, both tabs must be rendered without truncation or dropping
         assert!(content.contains("[1]"), "Must have tab 1 index");
-        assert!(content.contains("Agents"), "Must have tab 1 title");
+        assert!(content.contains("Git Diff"), "Must have tab 1 title");
         assert!(content.contains("[2]"), "Must have tab 2 index");
-        assert!(content.contains("Git Diff"), "Must have tab 2 title");
-        assert!(content.contains("[3]"), "Must have tab 3 index");
-        assert!(content.contains("Artifacts"), "Must have tab 3 title");
+        assert!(content.contains("Artifacts"), "Must have tab 2 title");
     }
 
     #[test]
@@ -2112,5 +2062,39 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = format!("{:?}", buffer);
         assert!(content.contains("REVISÃO"));
+    }
+
+    #[test]
+    fn test_render_agent_picker_modal_layout() {
+        let backend = TestBackend::new(90, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let diff = GitDiff::demo();
+        let mut app = App::new(diff, None);
+        app.show_agent_picker = true;
+        app.agent_picker_target = crate::app::AgentPickerTarget::Primary;
+
+        let mut list_state = ListState::default();
+        terminal
+            .draw(|f| {
+                render_ui(f, &mut app, &mut list_state);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = format!("{:?}", buffer);
+
+        // Title should be present on top
+        assert!(
+            content.contains("Assign Primary AI"),
+            "Must contain modal title"
+        );
+        // Footer shortcuts should be rendered cleanly at the bottom
+        assert!(
+            content.contains("Switch Role"),
+            "Must contain Switch Role action"
+        );
+        assert!(content.contains("Assign"), "Must contain Assign action");
+        assert!(content.contains("Close"), "Must contain Close action");
     }
 }

@@ -45,29 +45,99 @@ command = [".\\target\\release\\herdr-interactive-diff.exe"]
 platforms = ["windows"]
 
 [[actions]]
+id = "open-diff"
+title = "Open Interactive Diff"
+description = "Open interactive git diff (split or tab per config)"
+command = ["./target/release/herdr-interactive-diff", "--open"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-diff-windows"
+title = "Open Interactive Diff"
+description = "Open interactive git diff (split or tab per config)"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--open"]
+platforms = ["windows"]
+
+[[actions]]
+id = "open-split"
+title = "Open Interactive Diff (Split Left)"
+description = "Open interactive git diff in vertical split on the left"
+command = ["./target/release/herdr-interactive-diff", "--open-left"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-split-windows"
+title = "Open Interactive Diff (Split Left)"
+description = "Open interactive git diff in vertical split on the left"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--open-left"]
+platforms = ["windows"]
+
+[[actions]]
+id = "focus-primary"
+title = "Focus Primary AI"
+description = "Focus Primary AI pane in Herdr"
+command = ["./target/release/herdr-interactive-diff", "--focus-primary"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "focus-primary-windows"
+title = "Focus Primary AI"
+description = "Focus Primary AI pane in Herdr"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--focus-primary"]
+platforms = ["windows"]
+
+[[actions]]
+id = "focus-review"
+title = "Focus Review AI"
+description = "Focus Review AI pane in Herdr"
+command = ["./target/release/herdr-interactive-diff", "--focus-review"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "focus-review-windows"
+title = "Focus Review AI"
+description = "Focus Review AI pane in Herdr"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--focus-review"]
+platforms = ["windows"]
+
+[[actions]]
+id = "trigger-review"
+title = "Trigger Review AI"
+description = "Submit 5-Lens Code Review to Review AI pane"
+command = ["./target/release/herdr-interactive-diff", "--trigger-review"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "trigger-review-windows"
+title = "Trigger Review AI"
+description = "Submit 5-Lens Code Review to Review AI pane"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--trigger-review"]
+platforms = ["windows"]
+
+[[actions]]
+id = "trigger-validation"
+title = "Trigger Primary AI Validation"
+description = "Submit anti-overengineering validation to Primary AI pane"
+command = ["./target/release/herdr-interactive-diff", "--trigger-validation"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "trigger-validation-windows"
+title = "Trigger Primary AI Validation"
+description = "Submit anti-overengineering validation to Primary AI pane"
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--trigger-validation"]
+platforms = ["windows"]
+
+[[actions]]
 id = "open-tab"
 title = "Open Interactive Diff (Tab)"
 description = "Open interactive git diff and artifact viewer in a new tab"
-command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-tab"]
+command = ["./target/release/herdr-interactive-diff", "--open-tab"]
 platforms = ["linux", "macos"]
 
 [[actions]]
 id = "open-tab-windows"
 title = "Open Interactive Diff (Tab)"
 description = "Open interactive git diff and artifact viewer in a new tab"
-command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-tab-windows"]
-platforms = ["windows"]
-
-[[actions]]
-id = "open-diff"
-title = "Open Interactive Diff"
-description = "Open interactive git diff and artifact viewer in a Herdr split"
-command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff"]
-platforms = ["linux", "macos"]
-
-[[actions]]
-id = "open-diff-windows"
-title = "Open Interactive Diff"
-description = "Open interactive git diff and artifact viewer in a Herdr split"
-command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-interactive-diff", "--entrypoint", "diff-windows"]
+command = [".\\target\\release\\herdr-interactive-diff.exe", "--open-tab"]
 platforms = ["windows"]

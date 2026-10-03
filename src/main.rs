@@ -29,13 +29,14 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use tokio::sync::mpsc;
 
-use crate::ai_engine::{classify_diff_with_antigravity, ClassificationResponse};
-use crate::app::{ActiveTab, AgentFocus, App, ArtifactPaneFocus, CodeLineDisplay, DiffPaneFocus};
+use crate::ai_engine::ClassificationResponse;
+use crate::app::{ActiveTab, App, ArtifactPaneFocus, CodeLineDisplay, DiffPaneFocus};
 use crate::git::GitDiff;
 use crate::herdr::HerdrClient;
 
 /// Asynchronous messages sent from background workers to UI
 pub enum AsyncAction {
+    #[allow(dead_code)]
     ClassificationReady(Result<ClassificationResponse, String>),
     DiffUpdated(GitDiff),
 }
@@ -64,10 +65,33 @@ async fn main() -> Result<()> {
     let mut set_review: Option<String> = None;
     let mut show_config = false;
     let mut run_setup = false;
+    let mut do_open = false;
+    let mut do_open_left = false;
+    let mut do_open_tab = false;
+    let mut set_placement: Option<String> = None;
+    let mut do_focus_primary = false;
+    let mut do_focus_review = false;
+    let mut do_trigger_review = false;
+    let mut do_trigger_validation = false;
 
     let mut iter = args.into_iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--open" => do_open = true,
+            "--open-left" | "--open-split" => do_open_left = true,
+            "--open-tab" => do_open_tab = true,
+            "--focus-primary" => do_focus_primary = true,
+            "--focus-review" => do_focus_review = true,
+            "--trigger-review" => do_trigger_review = true,
+            "--trigger-validation" => do_trigger_validation = true,
+            "--placement" => {
+                if let Some(val) = iter.next() {
+                    set_placement = Some(val);
+                } else {
+                    eprintln!("\n  Usage: herdr-interactive-diff --placement <split|tab>\n");
+                    return Ok(());
+                }
+            }
             "-s" | "--start" => {
                 if let Some(val) = iter.next() {
                     set_primary = Some(val);
@@ -108,6 +132,14 @@ async fn main() -> Result<()> {
                 println!("  USAGE:");
                 println!("      herdr-interactive-diff [OPTIONS] [DIRECTORY]\n");
                 println!("  OPTIONS:");
+                println!("      --open                      Open interactive diff (uses configured placement: split or tab)");
+                println!("      --open-left, --open-split   Open interactive diff in vertical split on the left in Herdr");
+                println!("      --open-tab                  Open interactive diff in a new tab in Herdr");
+                println!("      --placement <split|tab>     Configure default placement for <prefix>+f (split or tab)");
+                println!("      --focus-primary             Focus Primary AI pane in Herdr");
+                println!("      --focus-review              Focus Review AI pane in Herdr");
+                println!("      --trigger-review            Submit 5-lens code review to Review AI");
+                println!("      --trigger-validation        Submit anti-overengineering validation to Primary AI");
                 println!("      -s, --start <AGENT>         Set primary agent to open on start (17 Herdr agents supported)");
                 println!("      -r, --review <AGENT>        Set review agent for multi-lens review");
                 println!("      -c, --config                Display current AI agent configuration");
@@ -135,6 +167,268 @@ async fn main() -> Result<()> {
         }
     }
 
+    if do_open {
+        let cfg = config::load_config();
+        match herdr::open_diff_with_placement(None, cfg.placement) {
+            Ok(_) => {
+                match cfg.placement {
+                    config::DiffPlacement::Split => println!("✔ Opened herdr-interactive-diff on the left split in Herdr."),
+                    config::DiffPlacement::Tab => println!("✔ Opened herdr-interactive-diff in a new tab in Herdr."),
+                }
+            }
+            Err(e) => {
+                eprintln!("✖ Error opening interactive diff: {}", e);
+            }
+        }
+        return Ok(());
+    }
+
+    if do_open_left {
+        match herdr::open_split_left(None) {
+            Ok(_) => {
+                println!("✔ Opened herdr-interactive-diff on the left split in Herdr.");
+            }
+            Err(e) => {
+                eprintln!("✖ Error opening left split: {}", e);
+            }
+        }
+        return Ok(());
+    }
+
+    if do_open_tab {
+        match herdr::open_tab(None) {
+            Ok(_) => {
+                println!("✔ Opened herdr-interactive-diff in a new tab in Herdr.");
+            }
+            Err(e) => {
+                eprintln!("✖ Error opening tab: {}", e);
+            }
+        }
+        return Ok(());
+    }
+
+    fn resolve_target_pane(
+        client: &HerdrClient,
+        configured_pane_id: Option<&str>,
+        agent_name: &str,
+        target_dir: Option<&str>,
+        fallback_index: usize,
+    ) -> String {
+        let agents = client.list_agents();
+        let focused_ws = client.get_focused_workspace_id();
+
+        // 1. If configured_pane_id is set and exists in Herdr:
+        if let Some(pane_id) = configured_pane_id {
+            let clean = pane_id.trim();
+            if !clean.is_empty() {
+                if let Some(ag) = agents.iter().find(|a| a.pane_id == clean) {
+                    if focused_ws.is_none() || ag.workspace_id.as_deref() == focused_ws.as_deref() {
+                        return clean.to_string();
+                    }
+                }
+            }
+        }
+
+        // 2. Match agent of requested kind in the CURRENTLY FOCUSED WORKSPACE
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = agents.iter().find(|a| {
+                a.agent.to_lowercase() == agent_name.to_lowercase()
+                    && a.workspace_id.as_deref() == Some(ws_id.as_str())
+            }) {
+                return ag.pane_id.clone();
+            }
+        }
+
+        // 3. If target_dir is available, prefer an agent of requested kind matching current working directory / repo
+        if let Some(dir) = target_dir {
+            let norm_dir = std::fs::canonicalize(dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| dir.to_string());
+            for ag in &agents {
+                if ag.agent.to_lowercase() == agent_name.to_lowercase() {
+                    if let Some(ref cwd) = ag.cwd.as_ref().or(ag.foreground_cwd.as_ref()) {
+                        let norm_cwd = std::fs::canonicalize(cwd)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| cwd.to_string());
+                        if norm_cwd == norm_dir || norm_dir.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_dir) {
+                            return ag.pane_id.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Any agent in current focused workspace
+        if let Some(ref ws_id) = focused_ws {
+            if let Some(ag) = agents.iter().find(|a| a.workspace_id.as_deref() == Some(ws_id.as_str())) {
+                return ag.pane_id.clone();
+            }
+        }
+
+        // 5. Configured pane ID if valid
+        if let Some(pane_id) = configured_pane_id {
+            let clean = pane_id.trim();
+            if !clean.is_empty() && agents.iter().any(|a| a.pane_id == clean) {
+                return clean.to_string();
+            }
+        }
+
+        // 6. Match any agent of requested kind
+        agents
+            .iter()
+            .find(|a| a.agent.to_lowercase() == agent_name.to_lowercase())
+            .map(|a| a.pane_id.clone())
+            .or_else(|| agents.get(fallback_index).map(|a| a.pane_id.clone()))
+            .or_else(|| agents.first().map(|a| a.pane_id.clone()))
+            .unwrap_or_else(|| agent_name.to_string())
+    }
+
+    if do_focus_primary {
+        let detected = herdr::detect_herdr_working_dir();
+        let cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        let target_dir_resolved = target_dir
+            .as_deref()
+            .or(detected.as_deref())
+            .or(cwd_str.as_deref())
+            .unwrap_or(".");
+        let cfg = config::load_config();
+        if let Some(client) = HerdrClient::try_detect() {
+            let target = resolve_target_pane(
+                &client,
+                cfg.primary_pane_id.as_deref(),
+                cfg.primary_agent.as_str(),
+                Some(target_dir_resolved),
+                0,
+            );
+            if let Err(e) = client.focus_pane(&target) {
+                if !target.contains(':') {
+                    let _ = client.focus_agent(&target);
+                } else {
+                    eprintln!("Failed to focus pane {}: {}", target, e);
+                }
+            }
+            println!("✔ Focused Primary AI target ({})", target);
+        } else {
+            eprintln!("Herdr socket not found at ~/.config/herdr/herdr.sock");
+        }
+        return Ok(());
+    }
+
+    if do_focus_review {
+        let detected = herdr::detect_herdr_working_dir();
+        let cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        let target_dir_resolved = target_dir
+            .as_deref()
+            .or(detected.as_deref())
+            .or(cwd_str.as_deref())
+            .unwrap_or(".");
+        let cfg = config::load_config();
+        if let Some(client) = HerdrClient::try_detect() {
+            let target = resolve_target_pane(
+                &client,
+                cfg.review_pane_id.as_deref(),
+                cfg.review_agent.as_str(),
+                Some(target_dir_resolved),
+                1,
+            );
+            if let Err(e) = client.focus_pane(&target) {
+                if !target.contains(':') {
+                    let _ = client.focus_agent(&target);
+                } else {
+                    eprintln!("Failed to focus pane {}: {}", target, e);
+                }
+            }
+            println!("✔ Focused Review AI target ({})", target);
+        } else {
+            eprintln!("Herdr socket not found at ~/.config/herdr/herdr.sock");
+        }
+        return Ok(());
+    }
+
+    if do_trigger_review {
+        let detected = herdr::detect_herdr_working_dir();
+        let cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        let target_dir_resolved = target_dir
+            .as_deref()
+            .or(detected.as_deref())
+            .or(cwd_str.as_deref())
+            .unwrap_or(".");
+        let diff = GitDiff::from_local_repo(Some(target_dir_resolved)).unwrap_or_default();
+        if diff.files.is_empty() {
+            println!("No modified git files found to review.");
+            return Ok(());
+        }
+        let prompt = ai_engine::build_claude_review_prompt(&diff.raw);
+        let _ = clipboard::copy_to_clipboard(&prompt);
+
+        let cfg = config::load_config();
+        if let Some(client) = HerdrClient::try_detect() {
+            let target = resolve_target_pane(
+                &client,
+                cfg.review_pane_id.as_deref(),
+                cfg.review_agent.as_str(),
+                Some(target_dir_resolved),
+                1,
+            );
+            let _ = client.submit_agent_prompt(&target, &prompt);
+            let _ = client.focus_pane(&target);
+            let _ = client.show_notification("5-Lens Code Review submitted to Review AI.");
+            println!("✔ 5-Lens Code Review submitted to Review AI ({})", target);
+        } else {
+            println!("✔ 5-Lens Code Review copied to clipboard (Herdr socket not connected).");
+        }
+        return Ok(());
+    }
+
+    if do_trigger_validation {
+        let detected = herdr::detect_herdr_working_dir();
+        let cwd_str = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        let target_dir_resolved = target_dir
+            .as_deref()
+            .or(detected.as_deref())
+            .or(cwd_str.as_deref())
+            .unwrap_or(".");
+
+        let cfg = config::load_config();
+        let client_opt = HerdrClient::try_detect();
+
+        let review_target = client_opt.as_ref().map(|c| {
+            resolve_target_pane(
+                c,
+                cfg.review_pane_id.as_deref(),
+                cfg.review_agent.as_str(),
+                Some(target_dir_resolved),
+                1,
+            )
+        });
+
+        let review_text = client_opt
+            .as_ref()
+            .and_then(|c| review_target.as_ref().and_then(|t| c.read_pane_text(t, 200)))
+            .or_else(|| markdown_renderer::read_latest_claude_session_text(Some(target_dir_resolved)))
+            .unwrap_or_default();
+
+        let prompt = ai_engine::build_antigravity_validation_prompt(&review_text);
+        let _ = clipboard::copy_to_clipboard(&prompt);
+
+        if let Some(client) = client_opt {
+            let target = resolve_target_pane(
+                &client,
+                cfg.primary_pane_id.as_deref(),
+                cfg.primary_agent.as_str(),
+                Some(target_dir_resolved),
+                0,
+            );
+            let _ = client.submit_agent_prompt(&target, &prompt);
+            let _ = client.focus_pane(&target);
+            let _ = client.show_notification("Anti-overengineering validation submitted to Primary AI.");
+            println!("✔ Validation prompt submitted to Primary AI ({})", target);
+        } else {
+            println!("✔ Validation prompt copied to clipboard (Herdr socket not connected).");
+        }
+        return Ok(());
+    }
+
     if show_config {
         config::print_config();
         return Ok(());
@@ -145,7 +439,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if set_primary.is_some() || set_review.is_some() {
+    if set_primary.is_some() || set_review.is_some() || set_placement.is_some() {
         let mut cfg = config::load_config();
         if let Some(p_str) = set_primary {
             if let Some(agent) = config::AgentKind::parse(&p_str) {
@@ -163,10 +457,19 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
         }
+        if let Some(pl_str) = set_placement {
+            if let Some(placement) = config::DiffPlacement::parse(&pl_str) {
+                cfg.placement = placement;
+            } else {
+                eprintln!("\n  ✖ Unknown placement '{}'. Valid options: split (vertical split left), tab (new tab)\n", pl_str);
+                return Ok(());
+            }
+        }
         config::save_config(&cfg)?;
         println!("\n  ✔ Herdr Interactive Diff configuration updated:");
-        println!("    • Primary AI (opens on start):  {}", cfg.primary_agent.display_name());
-        println!("    • Review AI (multi-lens review): {}", cfg.review_agent.display_name());
+        println!("    • Primary AI (opens on start):   {}", cfg.primary_agent.display_name());
+        println!("    • Review AI (multi-lens review):  {}", cfg.review_agent.display_name());
+        println!("    • Diff Placement (<prefix>+f):    {}", cfg.placement.display_name());
         println!("    Saved to {}\n", config::get_config_path().display());
         println!("  Run 'herdr-interactive-diff' or use Herdr plugin to start.\n");
         return Ok(());
@@ -192,7 +495,7 @@ async fn main() -> Result<()> {
                 dir
             }
         })
-        .or_else(|| herdr::detect_herdr_working_dir())
+        .or_else(herdr::detect_herdr_working_dir)
         .or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -230,15 +533,8 @@ async fn main() -> Result<()> {
         let demo_resp = ClassificationResponse::demo();
         app.set_classifications(demo_resp.classifications);
     } else {
-        app.is_classifying = true;
-        let tx_classify = tx.clone();
-        let raw_diff = app.diff.raw.clone();
-        tokio::spawn(async move {
-            let res = classify_diff_with_antigravity(&raw_diff).await;
-            let _ = tx_classify.send(AsyncAction::ClassificationReady(
-                res.map_err(|e| e.to_string()),
-            ));
-        });
+        // Arquitetura desacoplada: sincroniza findings da IA de Review caso já existam no pane
+        app.sync_review_to_diff();
 
         // Background Watcher: Atualização contínua do Git Diff caso o código seja modificado
         let tx_diff = tx.clone();
@@ -345,18 +641,6 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         match app.active_tab {
-                            ActiveTab::Agents => {
-                                let term_width = terminal.size().map(|s| s.width).unwrap_or(120);
-                                if !app.show_review_agent || mouse.column < term_width / 2 {
-                                    if let Some(session) = &app.agy_session {
-                                        let offset = session.scroll_up(3);
-                                        app.status_message = format!("Primary AI: scrollback +{} lines", offset);
-                                    }
-                                } else if let Some(session) = &app.claude_session {
-                                    let offset = session.scroll_up(3);
-                                    app.status_message = format!("Review AI: scrollback +{} lines", offset);
-                                }
-                            }
                             ActiveTab::GitDiff => {
                                 let term_size = terminal.size().unwrap_or_default();
                                 let term_rect = ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
@@ -401,18 +685,6 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         match app.active_tab {
-                            ActiveTab::Agents => {
-                                let term_width = terminal.size().map(|s| s.width).unwrap_or(120);
-                                if !app.show_review_agent || mouse.column < term_width / 2 {
-                                    if let Some(session) = &app.agy_session {
-                                        let offset = session.scroll_down(3);
-                                        app.status_message = format!("Primary AI: scrollback +{} lines", offset);
-                                    }
-                                } else if let Some(session) = &app.claude_session {
-                                    let offset = session.scroll_down(3);
-                                    app.status_message = format!("Review AI: scrollback +{} lines", offset);
-                                }
-                            }
                             ActiveTab::GitDiff => {
                                 let term_size = terminal.size().unwrap_or_default();
                                 let term_rect = ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
@@ -461,15 +733,11 @@ async fn main() -> Result<()> {
 
                         // 1. Click on Top Bar (first 3 rows): switch tabs with mouse
                         if mouse.row <= 2 {
-                            if mouse.column <= 16 {
-                                app.active_tab = ActiveTab::Agents;
-                                app.sync_herdr_agent_state("idle");
-                                app.status_message = "Switched to [1] Agents.".to_string();
-                            } else if mouse.column <= 34 {
+                            if mouse.column <= 18 {
                                 app.active_tab = ActiveTab::GitDiff;
-                                app.sync_claude_review_to_diff();
+                                app.sync_review_to_diff();
                                 app.refresh_diff();
-                            } else if mouse.column <= 52 && app.has_artifacts() {
+                            } else if mouse.column <= 36 && app.has_artifacts() {
                                 app.refresh_artifacts();
                                 if app.has_artifacts() {
                                     app.active_tab = ActiveTab::Artifacts;
@@ -480,16 +748,6 @@ async fn main() -> Result<()> {
 
                         // 2. Click in Main Content
                         match app.active_tab {
-                            ActiveTab::Agents => {
-                                if app.show_review_agent {
-                                    let term_width = terminal.size().map(|s| s.width).unwrap_or(120);
-                                    if mouse.column < term_width / 2 {
-                                        app.agent_focus = AgentFocus::Antigravity;
-                                    } else {
-                                        app.agent_focus = AgentFocus::Claude;
-                                    }
-                                }
-                            }
                             ActiveTab::GitDiff => {
                                 app.mouse_drag_start = Some((mouse.column, mouse.row));
                                 app.mouse_drag_end = None;
@@ -565,9 +823,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     MouseEventKind::Drag(MouseButton::Left) => {
-                        if app.active_tab != ActiveTab::Agents {
-                            app.mouse_drag_end = Some((mouse.column, mouse.row));
-                        }
+                        app.mouse_drag_end = Some((mouse.column, mouse.row));
                     }
                     MouseEventKind::Up(MouseButton::Left) => {
                         if let (Some(start), Some(end)) = (app.mouse_drag_start, app.mouse_drag_end) {
@@ -575,7 +831,6 @@ async fn main() -> Result<()> {
                             let col_diff = (start.0 as i32 - end.0 as i32).abs();
                             if row_diff > 0 || col_diff > 4 {
                                 match app.active_tab {
-                                    ActiveTab::Agents => {} // No drag-copy in agent terminals
                                     ActiveTab::GitDiff => {
                                         let min_row = start.1.min(end.1);
                                         let max_row = start.1.max(end.1);
@@ -632,15 +887,8 @@ async fn main() -> Result<()> {
                     _ => {}
                 }
             } else if let Event::Paste(text) = ev {
-                match app.active_tab {
-                    ActiveTab::Agents => {
-                        app.paste_text_to_agent(&text);
-                    }
-                    _ => {
-                        if app.is_asking_question {
-                            app.question_input.push_str(&text);
-                        }
-                    }
+                if app.is_asking_question {
+                    app.question_input.push_str(&text);
                 }
             } else if let Event::Key(key) = ev {
                 if key.kind == KeyEventKind::Press {
@@ -719,10 +967,9 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Global shortcut: Ctrl+R launches or toggles Review AI split
+                    // Global shortcut: Ctrl+R triggers 5-lens code review to Review AI
                     if is_ctrl && (key.code == KeyCode::Char('r') || key.code == KeyCode::Char('R')) {
-                        app.active_tab = ActiveTab::Agents;
-                        app.toggle_review_agent();
+                        app.trigger_review();
                         continue;
                     }
 
@@ -732,51 +979,40 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Global shortcut: Ctrl+S copies review from Review AI to Primary AI (validation / anti-overengineering)
+                    // Global shortcut: Ctrl+S copies review to Primary AI for anti-overengineering validation
                     if is_ctrl && (key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S')) {
-                        app.trigger_antigravity_validation();
+                        app.trigger_validation();
                         continue;
                     }
 
-                    // Global shortcut to Cycle Tabs: Ctrl+T
-                    if is_ctrl && (key.code == KeyCode::Char('t') || key.code == KeyCode::Char('T')) {
+                    // Global shortcut to Cycle Tabs: Ctrl+T or Tab
+                    if (is_ctrl && (key.code == KeyCode::Char('t') || key.code == KeyCode::Char('T')))
+                        || (key.code == KeyCode::Tab && !app.is_asking_question && !app.show_agent_picker && !app.show_help)
+                    {
                         app.active_tab = match app.active_tab {
-                            ActiveTab::Agents => {
-                                app.sync_claude_review_to_diff();
+                            ActiveTab::GitDiff => {
+                                app.refresh_artifacts();
+                                ActiveTab::Artifacts
+                            }
+                            ActiveTab::Artifacts => {
+                                app.sync_review_to_diff();
                                 app.refresh_diff();
                                 ActiveTab::GitDiff
                             }
-                            ActiveTab::GitDiff => {
-                                app.refresh_artifacts();
-                                if app.has_artifacts() {
-                                    ActiveTab::Artifacts
-                                } else {
-                                    ActiveTab::Agents
-                                }
-                            }
-                            ActiveTab::Artifacts => ActiveTab::Agents,
                         };
                         continue;
                     }
 
-                    // Global Tab Shortcuts: F1 / Ctrl+1 (Agents), F2 / Ctrl+2 (Git Diff), F3 / Ctrl+3 (Artifacts)
+                    // Global Tab Shortcuts: F1 / Ctrl+1 (Git Diff), F2 / Ctrl+2 (Artifacts)
                     if key.code == KeyCode::F(1) || (is_ctrl && key.code == KeyCode::Char('1')) {
-                        app.active_tab = ActiveTab::Agents;
-                        continue;
-                    }
-                    if key.code == KeyCode::F(2) || (is_ctrl && key.code == KeyCode::Char('2')) {
-                        app.sync_claude_review_to_diff();
+                        app.sync_review_to_diff();
                         app.refresh_diff();
                         app.active_tab = ActiveTab::GitDiff;
                         continue;
                     }
-                    if key.code == KeyCode::F(3) || (is_ctrl && key.code == KeyCode::Char('3')) {
+                    if key.code == KeyCode::F(2) || (is_ctrl && key.code == KeyCode::Char('2')) {
                         app.refresh_artifacts();
-                        if app.has_artifacts() {
-                            app.active_tab = ActiveTab::Artifacts;
-                        } else {
-                            app.status_message = "No artifacts available for current Antigravity session.".to_string();
-                        }
+                        app.active_tab = ActiveTab::Artifacts;
                         continue;
                     }
 
@@ -795,32 +1031,7 @@ async fn main() -> Result<()> {
 
                     match app.active_tab {
 
-                        // TAB 1: AGENTS (Primary AI + optional Review AI split)
-                        ActiveTab::Agents => {
-                            if app.is_dual_agent_active()
-                                && is_ctrl
-                                && (key.code == KeyCode::Char('o') || key.code == KeyCode::Char('O')
-                                    || key.code == KeyCode::Char('w') || key.code == KeyCode::Char('W'))
-                            {
-                                app.toggle_agent_focus();
-                                continue;
-                            }
-                            if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V')) {
-                                if let Some(clip) = crate::clipboard::get_clipboard_text() {
-                                    if clip.len() > crate::terminal_session::TerminalSession::MAX_PASTE_BYTES {
-                                        app.status_message = "Pasted text truncated to 512 KB safeguard.".to_string();
-                                    }
-                                    app.paste_text_to_agent(&clip);
-                                    continue;
-                                }
-                            }
-                            let bytes = key_event_to_bytes(&key);
-                            if !bytes.is_empty() {
-                                app.send_key_to_agent(&bytes);
-                            }
-                        }
-
-                        // TAB 2: GIT DIFF (File list + Diff/FullFile viewer + Floating tooltip)
+                        // TAB 1: GIT DIFF (File list + Diff/FullFile viewer + Floating tooltip)
                         ActiveTab::GitDiff => {
                             if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
                                 if let Some(line) = app.code_lines.get(app.code_cursor_idx) {
@@ -848,20 +1059,13 @@ async fn main() -> Result<()> {
                                     app.status_message = "Type your question about the selected code and press [Enter] to ask AI.".to_string();
                                 }
                                 KeyCode::Char('1') => {
-                                    app.active_tab = ActiveTab::Agents;
-                                }
-                                KeyCode::Char('2') => {
-                                    app.sync_claude_review_to_diff();
+                                    app.sync_review_to_diff();
                                     app.refresh_diff();
                                     app.active_tab = ActiveTab::GitDiff;
                                 }
-                                KeyCode::Char('3') => {
+                                KeyCode::Char('2') => {
                                     app.refresh_artifacts();
-                                    if app.has_artifacts() {
-                                        app.active_tab = ActiveTab::Artifacts;
-                                    } else {
-                                        app.status_message = "No artifacts available for current session.".to_string();
-                                    }
+                                    app.active_tab = ActiveTab::Artifacts;
                                 }
                                 // Key 'r', 'R' or F5: Refresh diff
                                 KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::F(5) if !is_ctrl => {
@@ -954,7 +1158,7 @@ async fn main() -> Result<()> {
                             }
                         }
 
-                        // TAB 3: ARTIFACTS (Workspace & AI Markdown Artifacts Viewer)
+                        // TAB 2: ARTIFACTS (Workspace & AI Markdown Artifacts Viewer)
                         ActiveTab::Artifacts => {
                             if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
                                 if !app.artifacts.is_empty() && app.selected_artifact_idx < app.artifacts.len() {
@@ -969,18 +1173,13 @@ async fn main() -> Result<()> {
                                     app.should_quit = true;
                                 }
                                 KeyCode::Char('1') => {
-                                    app.active_tab = ActiveTab::Agents;
-                                }
-                                KeyCode::Char('2') => {
-                                    app.sync_claude_review_to_diff();
+                                    app.sync_review_to_diff();
                                     app.refresh_diff();
                                     app.active_tab = ActiveTab::GitDiff;
                                 }
-                                KeyCode::Char('3') => {
+                                KeyCode::Char('2') => {
                                     app.refresh_artifacts();
-                                    if app.has_artifacts() {
-                                        app.active_tab = ActiveTab::Artifacts;
-                                    }
+                                    app.active_tab = ActiveTab::Artifacts;
                                 }
                                 KeyCode::Char('y') if !is_ctrl => {
                                     if !app.artifacts.is_empty() && app.selected_artifact_idx < app.artifacts.len() {

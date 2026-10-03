@@ -158,7 +158,7 @@ pub fn detect_presence_lock_for_pid(pid: u32) -> Option<String> {
 
 /// Detecta o ID da conversa ativa do Antigravity CLI para o repositório atual
 pub fn detect_active_antigravity_conversation_id(
-    _repo_path: Option<&str>,
+    repo_path: Option<&str>,
     screen_text: Option<&str>,
     child_pid: Option<u32>,
 ) -> Option<String> {
@@ -196,6 +196,74 @@ pub fn detect_active_antigravity_conversation_id(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // 4. Verificação das conversas mais recentes em ~/.gemini/antigravity-cli/brain/ vinculadas ao repo_path
+    let target_dir = match repo_path {
+        Some(p) => std::fs::canonicalize(p)
+            .map(|pb| pb.to_string_lossy().to_string())
+            .unwrap_or_else(|_| p.to_string()),
+        None => String::new(),
+    };
+
+    if !target_dir.is_empty() {
+        let brain_dir = PathBuf::from(&home).join(".gemini/antigravity-cli/brain");
+        if brain_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&brain_dir) {
+                let mut candidates: Vec<(String, SystemTime)> = entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if name.len() == 36 && name.contains('-') && e.path().is_dir() {
+                            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                            Some((name, mtime))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
+                candidates.truncate(20);
+
+                let mut first_match = None;
+                for (conv_id, _) in &candidates {
+                    let transcript_path = brain_dir
+                        .join(conv_id)
+                        .join(".system_generated/logs/transcript.jsonl");
+                    if transcript_path.is_file() {
+                        if let Ok(file) = fs::File::open(&transcript_path) {
+                            use std::io::{BufRead, BufReader};
+                            let reader = BufReader::new(file);
+                            for line in reader.lines().take(40).flatten() {
+                                if line.contains(&target_dir) {
+                                    if first_match.is_none() {
+                                        first_match = Some(conv_id.clone());
+                                    }
+                                    let has_artifacts = fs::read_dir(brain_dir.join(conv_id))
+                                        .map(|entries| {
+                                            entries.flatten().any(|e| {
+                                                let p = e.path();
+                                                p.is_file()
+                                                    && p.extension().and_then(|s| s.to_str()) == Some("md")
+                                                    && !e.file_name().to_string_lossy().starts_with('.')
+                                            })
+                                        })
+                                        .unwrap_or(false);
+                                    if has_artifacts {
+                                        return Some(conv_id.clone());
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(m) = first_match {
+                    return Some(m);
                 }
             }
         }
