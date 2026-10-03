@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -288,10 +287,6 @@ pub fn get_config_path() -> PathBuf {
     PathBuf::from(".herdr-interactive-diff/config.json")
 }
 
-/// Checks if configuration file exists on disk
-pub fn config_exists() -> bool {
-    get_config_path().exists()
-}
 
 /// Loads configuration from disk, returning default if not found or invalid
 pub fn load_config() -> PluginConfig {
@@ -362,118 +357,21 @@ pub fn print_config() {
     println!("\n  󰚩 HERDR INTERACTIVE DIFF CONFIGURATION");
     println!("  Path: {}", path.display());
     println!("  --------------------------------------------------");
-    println!("  • Primary agent:  {}", cfg.primary_agent.display_name());
-    println!("  • Review agent:   {}", cfg.review_agent.display_name());
-    println!("  • Diff placement: {}", cfg.placement.display_name());
+    println!("  • Diff placement:       {}", cfg.placement.display_name());
+    println!("  • Preferred Primary AI: {}", cfg.primary_agent.display_name());
+    println!("  • Preferred Review AI:  {}", cfg.review_agent.display_name());
+    if let Some(ref pid) = cfg.primary_pane_id {
+        println!("  • Bound Primary Pane:   {}", pid);
+    }
+    if let Some(ref pid) = cfg.review_pane_id {
+        println!("  • Bound Review Pane:    {}", pid);
+    }
     if let Some(t) = &cfg.custom_theme {
-        println!("  • Theme override: {}", t);
+        println!("  • Theme override:       {}", t);
     }
-    println!("\n  Supported agents: pi, amp, claude, codex, copilot, devin, droid,");
-    println!("                   kimi, opencode, kilo, hermes, qodercli, qwen,");
-    println!("                   cursor, mastracode, antigravity (agy), grok\n");
-    println!("  Use 'herdr-interactive-diff -s <agent>' to set primary agent");
-    println!("  Use 'herdr-interactive-diff -r <agent>' to set review agent");
-    println!("  Use 'herdr-interactive-diff --placement <split|tab>' to set placement\n");
-}
-
-/// Prompts the user interactively in the terminal on first run
-pub fn prompt_first_time_setup() -> Result<PluginConfig> {
-    let stdin = io::stdin();
-    if !stdin.is_terminal() {
-        let default_cfg = PluginConfig::default();
-        let _ = save_config(&default_cfg);
-        return Ok(default_cfg);
-    }
-
-    println!("\n  󰚩 Welcome to Herdr Interactive Diff! Initial AI Setup");
-    println!("  ===============================================================");
-    println!("  Configure your preferred AI agents from the 17 Herdr supported agents.");
-    println!("  (Change anytime with 'herdr-interactive-diff -s <agent>' or '-r <agent>')\n");
-
-    let mut reader = stdin.lock();
-
-    // 1. Primary Agent
-    println!("  1. Choose Primary AI (opens on start):");
-    println!("     [1] Antigravity CLI (agy) [default]");
-    println!("     [2] Claude Code (claude)");
-    println!("     [3] Grok Build (grok)");
-    println!("     [4] GitHub Copilot (copilot)");
-    println!("     [5] Cursor Agent (cursor)");
-    println!("     [6] Devin CLI (devin)");
-    println!("     [7] Other supported agent (enter name)");
-    print!("  Enter choice [1-7 or name] (default 1): ");
-    let _ = io::stdout().flush();
-
-    let mut line1 = String::new();
-    let _ = reader.read_line(&mut line1);
-    let primary = match line1.trim() {
-        "2" | "claude" => AgentKind::Claude,
-        "3" | "grok" => AgentKind::Grok,
-        "4" | "copilot" => AgentKind::Copilot,
-        "5" | "cursor" => AgentKind::Cursor,
-        "6" | "devin" => AgentKind::Devin,
-        other => AgentKind::parse(other).unwrap_or(AgentKind::Agy),
-    };
-
-    println!("\n  2. Choose Review AI (runs technical review on diff):");
-    match primary {
-        AgentKind::Agy => {
-            println!("     [1] Claude Code (claude) [default]");
-            println!("     [2] Antigravity CLI (agy)");
-            println!("     [3] Grok Build (grok)");
-        }
-        _ => {
-            println!("     [1] Antigravity CLI (agy) [default]");
-            println!("     [2] Claude Code (claude)");
-            println!("     [3] Grok Build (grok)");
-        }
-    }
-    print!("  Enter choice (default 1): ");
-    let _ = io::stdout().flush();
-
-    let mut line2 = String::new();
-    let _ = reader.read_line(&mut line2);
-    let review = match primary {
-        AgentKind::Agy => match line2.trim() {
-            "2" | "agy" => AgentKind::Agy,
-            "3" | "grok" => AgentKind::Grok,
-            other => AgentKind::parse(other).unwrap_or(AgentKind::Claude),
-        },
-        _ => match line2.trim() {
-            "2" | "claude" => AgentKind::Claude,
-            "3" | "grok" => AgentKind::Grok,
-            other => AgentKind::parse(other).unwrap_or(AgentKind::Agy),
-        },
-    };
-
-    println!("\n  3. Choose Diff Placement (where to open on <prefix>+f):");
-    println!("     [1] Vertical Split on the left (split) [default]");
-    println!("     [2] New Tab (tab)");
-    print!("  Enter choice [1-2] (default 1): ");
-    let _ = io::stdout().flush();
-
-    let mut line3 = String::new();
-    let _ = reader.read_line(&mut line3);
-    let placement = DiffPlacement::parse(line3.trim()).unwrap_or(DiffPlacement::Split);
-
-    let config = PluginConfig {
-        primary_agent: primary,
-        review_agent: review,
-        primary_pane_id: None,
-        review_pane_id: None,
-        custom_theme: None,
-        placement,
-    };
-
-    save_config(&config)?;
-    println!("\n  ✔ Configuration saved to {}", get_config_path().display());
-    println!("    • Primary AI: {}", config.primary_agent.display_name());
-    println!("    • Review AI:  {}", config.review_agent.display_name());
-    println!("    • Placement:  {}", config.placement.display_name());
-    println!("  Launching...\n");
-    std::thread::sleep(std::time::Duration::from_millis(400));
-
-    Ok(config)
+    println!("\n  Note: AI agents are automatically discovered from active Herdr panes.");
+    println!("  Press 'a' inside the interactive diff to assign or switch agent panes.");
+    println!("\n  Use 'herdr-interactive-diff --placement <split|tab>' to set placement\n");
 }
 
 #[cfg(test)]

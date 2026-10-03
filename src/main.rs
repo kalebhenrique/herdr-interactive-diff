@@ -6,8 +6,6 @@ mod config;
 mod git;
 mod herdr;
 mod markdown_renderer;
-mod pipeline;
-mod terminal_session;
 pub mod theme;
 mod ui;
 
@@ -55,16 +53,12 @@ async fn main() -> Result<()> {
         default_panic(info);
     }));
 
-    // Auto-install zsh completions silently if standard directories are available
-    completions::try_auto_install_zsh();
-
     let args: Vec<String> = std::env::args().collect();
     let mut is_demo = false;
     let mut target_dir: Option<String> = None;
     let mut set_primary: Option<String> = None;
     let mut set_review: Option<String> = None;
     let mut show_config = false;
-    let mut run_setup = false;
     let mut do_open = false;
     let mut do_open_left = false;
     let mut do_open_tab = false;
@@ -111,9 +105,6 @@ async fn main() -> Result<()> {
             "-c" | "--config" => {
                 show_config = true;
             }
-            "--setup" => {
-                run_setup = true;
-            }
             "--install-completions" => {
                 completions::install_completions()?;
                 return Ok(());
@@ -140,18 +131,13 @@ async fn main() -> Result<()> {
                 println!("      --focus-review              Focus Review AI pane in Herdr");
                 println!("      --trigger-review            Submit 5-lens code review to Review AI");
                 println!("      --trigger-validation        Submit anti-overengineering validation to Primary AI");
-                println!("      -s, --start <AGENT>         Set primary agent to open on start (17 Herdr agents supported)");
-                println!("      -r, --review <AGENT>        Set review agent for multi-lens review");
-                println!("      -c, --config                Display current AI agent configuration");
-                println!("      --setup                     Rerun interactive first-time AI setup wizard");
-                println!("      --install-completions       Install shell autocomplete (zsh, bash, fish)");
-                println!("      --completions <SHELL>       Generate completion script (zsh, bash, fish)");
+                println!("      -c, --config                Display current configuration and bound agent panes");
                 println!("      --demo                      Start in demo mode with mock data");
                 println!("      -p, --path <DIR>            Specify working repository directory");
                 println!("      -h, --help                  Display this help menu\n");
-                println!("  SUPPORTED HERDR AGENTS:");
-                println!("      pi, amp, claude, codex, copilot, devin, droid, kimi, opencode,");
-                println!("      kilo, hermes, qodercli, qwen, cursor, mastracode, antigravity (agy), grok\n");
+                println!("  AI AGENTS:");
+                println!("      Agents are automatically discovered from active Herdr panes in your workspace.");
+                println!("      Inside the diff viewer, press 'a' to open the Agent Picker and assign panes.\n");
                 return Ok(());
             }
             "--demo" => is_demo = true,
@@ -434,11 +420,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if run_setup {
-        let _ = config::prompt_first_time_setup()?;
-        return Ok(());
-    }
-
     if set_primary.is_some() || set_review.is_some() || set_placement.is_some() {
         let mut cfg = config::load_config();
         if let Some(p_str) = set_primary {
@@ -467,20 +448,14 @@ async fn main() -> Result<()> {
         }
         config::save_config(&cfg)?;
         println!("\n  ✔ Herdr Interactive Diff configuration updated:");
-        println!("    • Primary AI (opens on start):   {}", cfg.primary_agent.display_name());
-        println!("    • Review AI (multi-lens review):  {}", cfg.review_agent.display_name());
         println!("    • Diff Placement (<prefix>+f):    {}", cfg.placement.display_name());
+        println!("    • Preferred Primary AI:           {}", cfg.primary_agent.display_name());
+        println!("    • Preferred Review AI:            {}", cfg.review_agent.display_name());
         println!("    Saved to {}\n", config::get_config_path().display());
-        println!("  Run 'herdr-interactive-diff' or use Herdr plugin to start.\n");
         return Ok(());
     }
 
-    // First-time setup wizard if no configuration exists yet
-    let app_config = if !config::config_exists() {
-        config::prompt_first_time_setup()?
-    } else {
-        config::load_config()
-    };
+    let app_config = config::load_config();
 
     // Expande til (~) se presente no caminho do diretório, detecta contexto do Herdr ou usa o diretório atual
     let target_dir = target_dir

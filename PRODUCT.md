@@ -44,15 +44,11 @@ The custom unified-diff parser produces `DiffFile`/`DiffHunk`. **Hunk IDs (`"{fi
 - Classification levels: `forte` (critical → "caveman" review tooltip), `media`, `curiosidade` (hint-only), `normal`.
 - `build_claude_review_prompt` produces a 5-lens review prompt (security, readability, edge_cases, maintainability, architecture) that demands a trailing ```json block of classifications.
 - `extract_classifications_from_review` parses that JSON, falling back to a resilient heuristic parser for `**[HIGH] [lens] [file:line] Title**` / `Why:` / `Fix:` markdown lines.
-- One-shot CLI invocations use `agy -p` / `claude -p` (`classify_diff_with_antigravity`, `pipeline.rs`); interactive agent runs go through PTY sessions.
+- One-shot CLI invocations use `agy -p` (`classify_diff_with_antigravity`); interactive agent communications go through Herdr IPC socket (`submit_agent_prompt`).
 
-### Terminal sessions (terminal_session.rs)
+### Herdr integration (herdr.rs)
 
-PTY via `portable-pty`, screen state via `vt100` parser (10k scrollback), rendered with `tui-term`. A background reader thread per session feeds the parser. Prompts are injected with **bracketed paste mode** (`paste_command`), not plain typing, so multi-line prompts survive agent input handling. `read_screen_text()` is the screen-scraping primitive everything else (review sync, Herdr state detection, artifact detection) builds on.
-
-### Herdr integration (herdr.rs) — optional
-
-Talks to the Herdr workspace manager over a Unix socket (JSON-RPC per request; `~/.config/herdr/herdr.sock`, overridable via `HERDR_SOCKET_PATH`; pane discovery via `HERDR_PANE_ID`). Agent state (idle/working/blocked) is **inferred from terminal screen text** — spinner glyphs and permission-prompt phrases in `detect_session_state`. If you change agent CLI output handling, check these heuristics still match. All socket calls fail silently (return `Option`), so Herdr absence is always safe.
+Talks to the Herdr workspace manager over a Unix socket (JSON-RPC per request; `~/.config/herdr/herdr.sock`, overridable via `HERDR_SOCKET_PATH`). Agent discovery is dynamically queried from Herdr (`agent.list`), and prompts are submitted to Herdr panes using `pane.submit_prompt` / bracketed paste. Agent assignments (Primary and Review) are managed interactively in the TUI (modal `a`). All socket calls fail gracefully (return `Option`/`Result`), so Herdr absence is always safe.
 
 ### Artifacts (markdown_renderer.rs)
 
@@ -66,5 +62,4 @@ Reviews and pointwise questions (`?` key) persist per-repo as JSON under `~/.con
 
 - Comments and error strings are mixed PT-BR/English; UI-facing strings are English. Follow the surrounding file.
 - `--demo` mode (`GitDiff::demo()` + `ClassificationResponse::demo()`) is the fixture set for many tests — keep demo data consistent with what tests assert (hunk IDs, complexity levels, tooltip text like "PONT NO CHECK").
-- `pipeline.rs` is an older, simpler one-shot review path kept alongside the PTY-based flow; prefer the PTY/`ai_engine.rs` path for new work.
 - Warnings are not denied; some modules use `#![allow(dead_code)]`. Don't remove those pragmas while refactoring public-ish helpers.

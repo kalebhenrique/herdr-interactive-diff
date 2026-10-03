@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::config::AgentKind;
-use crate::terminal_session::TerminalSession;
 
 static GLOBAL_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -24,6 +23,7 @@ pub fn next_seq() -> u64 {
 }
 
 /// State of an AI agent according to Herdr's specification
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState {
     Idle,
@@ -418,125 +418,6 @@ impl HerdrClient {
         }
         Ok(())
     }
-}
-
-/// Detects the operational state of an agent (Working, Blocked, or Idle) from its live terminal screen
-pub fn detect_session_state(session: &TerminalSession, agent_name: &str) -> AgentState {
-    let screen = session.read_screen_text();
-    let trimmed = screen.trim();
-    if trimmed.is_empty() {
-        return AgentState::Idle;
-    }
-
-    let non_empty_lines: Vec<&str> = screen
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if non_empty_lines.is_empty() {
-        return AgentState::Idle;
-    }
-
-    // Inspect bottom 6 lines where active prompts, confirmations, and spinners live
-    let bottom_slice = if non_empty_lines.len() > 6 {
-        &non_empty_lines[non_empty_lines.len() - 6..]
-    } else {
-        &non_empty_lines[..]
-    };
-    let bottom_text = bottom_slice.join("\n");
-    let lower = bottom_text.to_lowercase();
-
-    // 1. Check for Blocked state (manual user approval, confirmation, question dialog)
-    let is_blocked = match agent_name {
-        "claude" => {
-            lower.contains("waiting for permission")
-                || (lower.contains("esc to cancel")
-                    && (lower.contains("enter to confirm")
-                        || lower.contains("enter to select")
-                        || lower.contains("allow")
-                        || lower.contains("tab to amend")))
-                || lower.contains("do you want to proceed?")
-                || lower.contains("do you want to allow")
-                || lower.contains("approval required")
-                || lower.contains("requesting permission for:")
-                || lower.contains("approve this command")
-                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
-        }
-        "agy" => {
-            lower.contains("requesting permission for:")
-                || lower.contains("do you want to proceed?")
-                || lower.contains("tab amend")
-                || lower.contains("edit command")
-                || lower.contains("permission required")
-                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
-        }
-        _ => {
-            lower.contains("requesting permission")
-                || lower.contains("permission required")
-                || lower.contains("do you want to proceed?")
-                || lower.contains("approval required")
-                || lower.contains("allow this command")
-                || (lower.contains("[y/n]") || lower.contains("(y/n)"))
-        }
-    };
-
-    if is_blocked {
-        return AgentState::Blocked;
-    }
-
-    // 2. Check for Working state (spinners, thinking indicator, background task active)
-    let braille_spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let circle_spinners = ['◐', '◓', '◑', '◒'];
-    let has_spinner = braille_spinners.iter().any(|&c| bottom_text.contains(c))
-        || circle_spinners.iter().any(|&c| bottom_text.contains(c));
-
-    if has_spinner {
-        return AgentState::Working;
-    }
-
-    match agent_name {
-        "claude"
-            if lower.contains("esc to interrupt")
-                || lower.contains("ctrl+c to interrupt")
-                || lower.contains("thinking…")
-                || lower.contains("thinking...")
-                || lower.contains("waiting for")
-                || lower.contains("mcp task") =>
-        {
-            return AgentState::Working;
-        }
-        "agy"
-            if lower.contains("thinking…")
-                || lower.contains("thinking...")
-                || lower.contains("analyzing…")
-                || lower.contains("analyzing...")
-                || lower.contains("generating…")
-                || lower.contains("generating...")
-                || lower.contains("running command") =>
-        {
-            return AgentState::Working;
-        }
-        _ if lower.contains("thinking…")
-            || lower.contains("thinking...")
-            || lower.contains("analyzing…")
-            || lower.contains("analyzing...")
-            || lower.contains("generating…")
-            || lower.contains("generating...")
-            || lower.contains("running command") =>
-        {
-            return AgentState::Working;
-        }
-        _ => {}
-    }
-
-    AgentState::Idle
-}
-
-/// Helper for backward compatibility
-#[allow(dead_code)]
-pub fn detect_session_working(session: &TerminalSession, agent_name: &str) -> bool {
-    detect_session_state(session, agent_name) == AgentState::Working
 }
 
 /// Resolves the socket path for the Herdr server

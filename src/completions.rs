@@ -69,18 +69,6 @@ complete -c herdr-interactive-diff -l install-completions -d "Install shell comp
 complete -c weavers -w herdr-interactive-diff
 "#;
 
-/// Automatically installs zsh completions if a standard homebrew or system path is writable
-pub fn try_auto_install_zsh() {
-    let site_functions = PathBuf::from("/opt/homebrew/share/zsh/site-functions");
-    if site_functions.is_dir() {
-        let target = site_functions.join("_herdr-interactive-diff");
-        if !target.exists() {
-            let _ = fs::write(&target, ZSH_COMPLETION);
-            let _ = fs::write(site_functions.join("_weavers"), ZSH_COMPLETION);
-            clean_zcompdump();
-        }
-    }
-}
 
 /// Explicitly installs completions into the best available shell directories
 pub fn install_completions() -> Result<()> {

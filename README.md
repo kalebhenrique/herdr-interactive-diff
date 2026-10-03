@@ -106,28 +106,32 @@ Add these keybindings to `~/.config/herdr/config.toml` for seamless terminal orc
 
 ## ⚙️ Configuration & CLI
 
-Configuration is stored in `~/.config/herdr-interactive-diff/config.json` (or `~/.config/herdr/plugins/config/herdr-interactive-diff/config.json` when running as a Herdr plugin). You can manage settings via CLI:
+Configuration is stored in `~/.config/herdr/plugins/config/herdr-interactive-diff/config.json` (or `~/.config/herdr-interactive-diff/config.json`).
+
+### Placement Configuration
+
+Configure whether `<prefix>+f` opens the interactive diff in a vertical split on the left or in a dedicated tab:
 
 ```bash
-# Set default placement for <prefix>+f (split on the left or dedicated tab)
+# Open as a vertical split on the left (default)
 herdr-interactive-diff --placement split
+
+# Open as a dedicated new tab
 herdr-interactive-diff --placement tab
 
-# Configure Primary AI agent (opens automatically on startup)
-herdr-interactive-diff -s agy
-
-# Configure Review AI agent (used for 5-lens code reviews)
-herdr-interactive-diff -r claude
-
-# Display current configuration
+# Display current configuration and bound agent panes
 herdr-interactive-diff -c
-
-# Run the interactive first-time setup wizard
-herdr-interactive-diff --setup
-
-# Install shell completions (zsh, bash, fish)
-herdr-interactive-diff --install-completions
 ```
+
+### Dynamic Herdr Agent Discovery
+
+You don't need to manually configure or launch AI agents from the CLI:
+- `herdr-interactive-diff` communicates directly with Herdr's Unix IPC socket (`$HERDR_SOCKET`).
+- It **automatically discovers** active AI agents (`agy`, `claude`, `copilot`, `cursor`, etc.) running in your workspace panes.
+- Inside the diff viewer, press **`a`** to open the interactive **Agent Picker** modal:
+  - Press `Tab` to switch between **Primary AI** and **Review AI**.
+  - Navigate with `↑`/`↓` and press `Enter` to bind.
+  - Selected panes and preferences are automatically remembered across sessions.
 
 ---
 
