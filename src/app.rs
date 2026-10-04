@@ -207,6 +207,33 @@ pub struct App {
     pub mouse_drag_start: Option<(u16, u16)>,
     pub mouse_drag_end: Option<(u16, u16)>,
     pub selected_text: Option<String>,
+
+    // Collapsible file tree in Git Diff drawer
+    pub collapsed_dirs: std::collections::HashSet<String>,
+    pub diff_tree_cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffTreeItem {
+    Directory {
+        path: String,
+        name: String,
+        is_collapsed: bool,
+        file_count: usize,
+        depth: usize,
+    },
+    File {
+        file_idx: usize,
+        name: String,
+        depth: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentNavTarget {
+    pub file_idx: usize,
+    pub hunk_id: String,
+    pub title: String,
 }
 
 /// Extracts session ID (UUID) from Herdr's DetectedAgent session metadata
@@ -229,6 +256,42 @@ pub fn extract_session_id_from_agent(agent: &crate::herdr::DetectedAgent) -> Opt
         }
     }
     None
+}
+
+/// Queries Herdr for pane process info and extracts the conversation ID from active presence lock or screen text
+pub fn resolve_pane_antigravity_conversation_id(
+    herdr: Option<&HerdrClient>,
+    pane_id: Option<&str>,
+    repo_path: Option<&str>,
+) -> Option<String> {
+    let (h, p_id) = (herdr?, pane_id?);
+    if let Some(proc_resp) = h.call_sync("pane.process_info", serde_json::json!({ "pane_id": p_id })) {
+        if let Some(info) = proc_resp.get("result").and_then(|r| r.get("process_info")) {
+            let mut pids = Vec::new();
+            if let Some(fg) = info.get("foreground_processes").and_then(|v| v.as_array()) {
+                for p in fg {
+                    if let Some(pid) = p.get("pid").and_then(|v| v.as_u64()) {
+                        pids.push(pid as u32);
+                    }
+                }
+            }
+            if let Some(sp) = info.get("shell_pid").and_then(|v| v.as_u64()) {
+                pids.push(sp as u32);
+            }
+            for pid in pids {
+                if let Some(cid) = crate::markdown_renderer::detect_presence_lock_for_pid(pid) {
+                    return Some(cid);
+                }
+            }
+        }
+    }
+
+    let screen_text = h.read_pane_text(p_id, 100);
+    crate::markdown_renderer::detect_active_antigravity_conversation_id(
+        repo_path,
+        screen_text.as_deref(),
+        None,
+    )
 }
 
 impl App {
@@ -352,6 +415,13 @@ impl App {
             if let Some(ag) = detected_agents.iter().find(|a| &a.pane_id == target_id) {
                 active_antigravity_conversation_id = extract_session_id_from_agent(ag);
             }
+            if active_antigravity_conversation_id.is_none() {
+                active_antigravity_conversation_id = resolve_pane_antigravity_conversation_id(
+                    herdr.as_ref(),
+                    Some(target_id),
+                    repo_path.as_deref(),
+                );
+            }
         }
         if active_antigravity_conversation_id.is_none() {
             if let Some(ref ws_id) = focused_workspace_id {
@@ -359,8 +429,13 @@ impl App {
                     if (ag.agent.to_lowercase() == "agy" || ag.agent.to_lowercase() == "antigravity")
                         && ag.workspace_id.as_deref() == Some(ws_id.as_str())
                     {
-                        if let Some(id) = extract_session_id_from_agent(ag) {
-                            active_antigravity_conversation_id = Some(id);
+                        active_antigravity_conversation_id = extract_session_id_from_agent(ag)
+                            .or_else(|| resolve_pane_antigravity_conversation_id(
+                                herdr.as_ref(),
+                                Some(&ag.pane_id),
+                                ag.cwd.as_deref().or(repo_path.as_deref()),
+                            ));
+                        if active_antigravity_conversation_id.is_some() {
                             break;
                         }
                     }
@@ -379,8 +454,13 @@ impl App {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_else(|_| cwd.to_string());
                             if norm_cwd == norm_path || norm_path.starts_with(&norm_cwd) || norm_cwd.starts_with(&norm_path) {
-                                if let Some(id) = extract_session_id_from_agent(ag) {
-                                    active_antigravity_conversation_id = Some(id);
+                                active_antigravity_conversation_id = extract_session_id_from_agent(ag)
+                                    .or_else(|| resolve_pane_antigravity_conversation_id(
+                                        herdr.as_ref(),
+                                        Some(&ag.pane_id),
+                                        Some(norm_cwd.as_str()),
+                                    ));
+                                if active_antigravity_conversation_id.is_some() {
                                     break;
                                 }
                             }
@@ -398,7 +478,12 @@ impl App {
         }
         if active_antigravity_conversation_id.is_none() {
             if let Some(ag) = detected_agents.iter().find(|a| a.agent.to_lowercase() == "agy" || a.agent.to_lowercase() == "antigravity") {
-                active_antigravity_conversation_id = extract_session_id_from_agent(ag);
+                active_antigravity_conversation_id = extract_session_id_from_agent(ag)
+                    .or_else(|| resolve_pane_antigravity_conversation_id(
+                        herdr.as_ref(),
+                        Some(&ag.pane_id),
+                        repo_path.as_deref(),
+                    ));
             }
         }
 
@@ -451,7 +536,7 @@ impl App {
             artifact_cursor_idx: 0,
             artifact_pane_focus: ArtifactPaneFocus::FileList,
             pointwise_questions: Vec::new(),
-            status_message: "herdr-interactive-diff ready. [1-2] Tabs | [Ctrl+R] Review | [Ctrl+S] Validate | [Ctrl+A] Active Agents | [?] Ask AI | [Ctrl+H] Help".to_string(),
+            status_message: "herdr-interactive-diff ready. [?] Help | [a] Agents | [/] Ask AI | [n/N] Comments".to_string(),
             should_quit: false,
             herdr,
             last_herdr_state: Some("idle".to_string()),
@@ -467,6 +552,8 @@ impl App {
             mouse_drag_start: None,
             mouse_drag_end: None,
             selected_text: None,
+            collapsed_dirs: std::collections::HashSet::new(),
+            diff_tree_cursor: 0,
         };
 
         app.rebuild_code_lines();
@@ -498,19 +585,7 @@ impl App {
 
     /// Returns or detects the active Antigravity conversation ID, caching it to avoid loss on resize/splits
     pub fn get_or_detect_active_agy_conversation_id(&mut self) -> Option<String> {
-        // 0. If we already have a cached active conversation ID, verify it exists on disk before returning
-        if let Some(ref id) = self.active_antigravity_conversation_id {
-            if !id.trim().is_empty() {
-                if let Ok(home) = std::env::var("HOME") {
-                    let bdir = std::path::PathBuf::from(home).join(".gemini/antigravity-cli/brain").join(id);
-                    if bdir.is_dir() {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-
-        // 1. Check primary target agent in detected_agents
+        // 1. First probe primary target agent via Herdr process info & presence lock
         let target_pane = self.find_primary_target();
         if let Some(ref target) = target_pane {
             for ag in &self.detected_agents {
@@ -522,27 +597,23 @@ impl App {
                 }
             }
 
-            // Query pane.process_info from Herdr to detect active presence lock by PID
-            if let Some(ref h) = self.herdr {
-                if let Some(proc_resp) = h.call_sync("pane.process_info", serde_json::json!({ "pane_id": target })) {
-                    if let Some(info) = proc_resp.get("result").and_then(|r| r.get("process_info")) {
-                        let mut pids = Vec::new();
-                        if let Some(fg) = info.get("foreground_processes").and_then(|v| v.as_array()) {
-                            for p in fg {
-                                if let Some(pid) = p.get("pid").and_then(|v| v.as_u64()) {
-                                    pids.push(pid as u32);
-                                }
-                            }
-                        }
-                        if let Some(sp) = info.get("shell_pid").and_then(|v| v.as_u64()) {
-                            pids.push(sp as u32);
-                        }
-                        for pid in pids {
-                            if let Some(conv_id) = crate::markdown_renderer::detect_presence_lock_for_pid(pid) {
-                                self.active_antigravity_conversation_id = Some(conv_id.clone());
-                                return Some(conv_id);
-                            }
-                        }
+            if let Some(conv_id) = resolve_pane_antigravity_conversation_id(
+                self.herdr.as_ref(),
+                Some(target.as_str()),
+                self.repo_path.as_deref(),
+            ) {
+                self.active_antigravity_conversation_id = Some(conv_id.clone());
+                return Some(conv_id);
+            }
+        }
+
+        // 2. If we already have a cached active conversation ID, verify it exists on disk before returning
+        if let Some(ref id) = self.active_antigravity_conversation_id {
+            if !id.trim().is_empty() {
+                if let Ok(home) = std::env::var("HOME") {
+                    let bdir = std::path::PathBuf::from(home).join(".gemini/antigravity-cli/brain").join(id);
+                    if bdir.is_dir() {
+                        return Some(id.clone());
                     }
                 }
             }
@@ -977,19 +1048,329 @@ impl App {
     /// Updates diff when files change on disk
     pub fn update_diff(&mut self, new_diff: GitDiff) {
         self.diff = new_diff;
+
+        // Prune classifications for files that are no longer part of the diff
+        let active_files: std::collections::HashSet<String> = self.diff.files.iter().map(|f| f.new_path.clone()).collect();
+        self.classifications.retain(|k, _| {
+            let file_part = k.split('#').next().unwrap_or(k);
+            active_files.iter().any(|f| {
+                f == file_part
+                    || f.ends_with(&format!("/{}", file_part))
+                    || file_part.ends_with(&format!("/{}", f))
+            })
+        });
+
         if self.selected_file_idx >= self.diff.files.len() {
             self.selected_file_idx = self.diff.files.len().saturating_sub(1);
         }
+        self.diff_tree_cursor = 0;
         self.code_cursor_idx = 0;
         self.code_scroll_offset = 0;
         self.show_tooltip = false;
         self.rebuild_code_lines();
+        self.sync_diff_tree_cursor_to_selected_file();
 
         if self.diff.files.is_empty() {
             self.status_message = "Git diff updated: clean working tree (no changes).".to_string();
         } else {
             self.status_message = format!("Git diff updated: {} file(s) modified.", self.diff.files.len());
         }
+    }
+
+    /// Builds a hierarchical tree of changed files in git diff with collapsible directories
+    pub fn build_diff_tree(&self) -> Vec<DiffTreeItem> {
+        if self.diff.files.is_empty() {
+            return Vec::new();
+        }
+
+        struct DirBuilder {
+            path: String,
+            subdirs: std::collections::BTreeMap<String, DirBuilder>,
+            files: Vec<(usize, String)>,
+        }
+
+        impl DirBuilder {
+            fn new(path: String) -> Self {
+                Self {
+                    path,
+                    subdirs: std::collections::BTreeMap::new(),
+                    files: Vec::new(),
+                }
+            }
+
+            fn total_files(&self) -> usize {
+                let mut count = self.files.len();
+                for sub in self.subdirs.values() {
+                    count += sub.total_files();
+                }
+                count
+            }
+
+            fn flatten_into(
+                &self,
+                collapsed: &std::collections::HashSet<String>,
+                depth: usize,
+                out: &mut Vec<DiffTreeItem>,
+            ) {
+                for (dirname, subdir) in &self.subdirs {
+                    let is_collapsed = collapsed.contains(&subdir.path);
+                    let file_count = subdir.total_files();
+                    out.push(DiffTreeItem::Directory {
+                        path: subdir.path.clone(),
+                        name: dirname.clone(),
+                        is_collapsed,
+                        file_count,
+                        depth,
+                    });
+                    if !is_collapsed {
+                        subdir.flatten_into(collapsed, depth + 1, out);
+                    }
+                }
+
+                for &(file_idx, ref fname) in &self.files {
+                    out.push(DiffTreeItem::File {
+                        file_idx,
+                        name: fname.clone(),
+                        depth,
+                    });
+                }
+            }
+        }
+
+        let mut root = DirBuilder::new(String::new());
+
+        for (idx, file) in self.diff.files.iter().enumerate() {
+            let path_parts: Vec<&str> = file.new_path.split('/').filter(|s| !s.is_empty()).collect();
+            if path_parts.is_empty() {
+                continue;
+            }
+            if path_parts.len() == 1 {
+                root.files.push((idx, path_parts[0].to_string()));
+            } else {
+                let mut current = &mut root;
+                let mut accumulated = String::new();
+                for &dir in &path_parts[..path_parts.len() - 1] {
+                    if !accumulated.is_empty() {
+                        accumulated.push('/');
+                    }
+                    accumulated.push_str(dir);
+                    current = current.subdirs.entry(dir.to_string()).or_insert_with(|| {
+                        DirBuilder::new(accumulated.clone())
+                    });
+                }
+                current.files.push((idx, path_parts.last().unwrap().to_string()));
+            }
+        }
+
+        let mut result = Vec::new();
+        root.flatten_into(&self.collapsed_dirs, 0, &mut result);
+        result
+    }
+
+    /// Synchronizes diff tree cursor index to currently selected file
+    pub fn sync_diff_tree_cursor_to_selected_file(&mut self) {
+        let tree = self.build_diff_tree();
+        for (idx, item) in tree.iter().enumerate() {
+            if let DiffTreeItem::File { file_idx, .. } = item {
+                if *file_idx == self.selected_file_idx {
+                    self.diff_tree_cursor = idx;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Moves cursor down in file tree drawer
+    pub fn diff_tree_next(&mut self) {
+        let tree = self.build_diff_tree();
+        if tree.is_empty() {
+            return;
+        }
+        if self.diff_tree_cursor + 1 < tree.len() {
+            self.diff_tree_cursor += 1;
+            if let Some(DiffTreeItem::File { file_idx, .. }) = tree.get(self.diff_tree_cursor) {
+                if *file_idx != self.selected_file_idx {
+                    self.selected_file_idx = *file_idx;
+                    self.code_cursor_idx = 0;
+                    self.code_scroll_offset = 0;
+                    self.rebuild_code_lines();
+                }
+            }
+        }
+    }
+
+    /// Moves cursor up in file tree drawer
+    pub fn diff_tree_prev(&mut self) {
+        let tree = self.build_diff_tree();
+        if tree.is_empty() {
+            return;
+        }
+        if self.diff_tree_cursor > 0 {
+            self.diff_tree_cursor -= 1;
+            if let Some(DiffTreeItem::File { file_idx, .. }) = tree.get(self.diff_tree_cursor) {
+                if *file_idx != self.selected_file_idx {
+                    self.selected_file_idx = *file_idx;
+                    self.code_cursor_idx = 0;
+                    self.code_scroll_offset = 0;
+                    self.rebuild_code_lines();
+                }
+            }
+        }
+    }
+
+    /// Toggles folder collapse state or selects file under cursor in file tree
+    pub fn diff_tree_toggle_current(&mut self) {
+        let tree = self.build_diff_tree();
+        if let Some(item) = tree.get(self.diff_tree_cursor).cloned() {
+            match item {
+                DiffTreeItem::Directory { path, is_collapsed, .. } => {
+                    if is_collapsed {
+                        self.collapsed_dirs.remove(&path);
+                    } else {
+                        self.collapsed_dirs.insert(path);
+                    }
+                }
+                DiffTreeItem::File { file_idx, .. } => {
+                    self.selected_file_idx = file_idx;
+                    self.rebuild_code_lines();
+                }
+            }
+        }
+    }
+
+    /// Expands folder under cursor
+    pub fn diff_tree_expand_current(&mut self) {
+        let tree = self.build_diff_tree();
+        if let Some(DiffTreeItem::Directory { path, .. }) = tree.get(self.diff_tree_cursor) {
+            self.collapsed_dirs.remove(path);
+        }
+    }
+
+    /// Collapses folder under cursor
+    pub fn diff_tree_collapse_current(&mut self) {
+        let tree = self.build_diff_tree();
+        if let Some(DiffTreeItem::Directory { path, .. }) = tree.get(self.diff_tree_cursor) {
+            self.collapsed_dirs.insert(path.clone());
+        }
+    }
+
+    /// Collects all review comment locations across all files in git diff
+    pub fn collect_all_comment_targets(&self) -> Vec<CommentNavTarget> {
+        let mut targets = Vec::new();
+        for (file_idx, file) in self.diff.files.iter().enumerate() {
+            for hunk in &file.hunks {
+                if let Some(c) = self.find_classification_for_hunk(hunk) {
+                    if c.level != ComplexityLevel::Normal || c.caveman_msg.is_some() || c.explanation.is_some() {
+                        let title = c.caveman_msg.clone()
+                            .or_else(|| c.explanation.as_ref().and_then(|e| e.lines().next().map(|s| s.to_string())))
+                            .unwrap_or_else(|| "Review comment".to_string());
+                        targets.push(CommentNavTarget {
+                            file_idx,
+                            hunk_id: hunk.id.clone(),
+                            title,
+                        });
+                    }
+                }
+            }
+        }
+        targets
+    }
+
+    /// Returns (current_1_based_index, total_comments) if review comments exist
+    pub fn current_comment_progress(&self) -> Option<(usize, usize)> {
+        let targets = self.collect_all_comment_targets();
+        if targets.is_empty() {
+            return None;
+        }
+
+        let current_hunk = self.current_selected_hunk_id();
+        for (idx, t) in targets.iter().enumerate() {
+            if t.file_idx == self.selected_file_idx && Some(&t.hunk_id) == current_hunk.as_ref() {
+                return Some((idx + 1, targets.len()));
+            }
+        }
+
+        for (idx, t) in targets.iter().enumerate() {
+            if t.file_idx == self.selected_file_idx {
+                return Some((idx + 1, targets.len()));
+            }
+        }
+
+        Some((1, targets.len()))
+    }
+
+    /// Jumps cursor to next review comment hunk across diff files (n key)
+    pub fn jump_to_next_comment(&mut self) {
+        let targets = self.collect_all_comment_targets();
+        if targets.is_empty() {
+            self.status_message = "No review comments in diff.".to_string();
+            return;
+        }
+
+        let current_pos = self.current_comment_progress().map(|(cur, _)| cur.saturating_sub(1)).unwrap_or(0);
+        let next_idx = (current_pos + 1) % targets.len();
+        let target = targets[next_idx].clone();
+
+        if self.selected_file_idx != target.file_idx {
+            self.selected_file_idx = target.file_idx;
+            self.rebuild_code_lines();
+            self.sync_diff_tree_cursor_to_selected_file();
+        }
+
+        if let Some(line_idx) = self.code_lines.iter().position(|l| match l {
+            CodeLineDisplay::CommentHeader { hunk_id, .. } => hunk_id == &target.hunk_id,
+            CodeLineDisplay::HunkHeader { hunk_id, .. } => hunk_id == &target.hunk_id,
+            CodeLineDisplay::DiffLine { hunk_id, .. } => hunk_id == &target.hunk_id,
+            _ => false,
+        }) {
+            self.code_cursor_idx = line_idx;
+            self.code_scroll_offset = line_idx.saturating_sub(3);
+        }
+
+        self.diff_pane_focus = DiffPaneFocus::CodeView;
+        self.status_message = format!(
+            "Review Comment [{}/{}]: {} • [n/N to navigate]",
+            next_idx + 1,
+            targets.len(),
+            target.title
+        );
+    }
+
+    /// Jumps cursor to previous review comment hunk across diff files (N key)
+    pub fn jump_to_prev_comment(&mut self) {
+        let targets = self.collect_all_comment_targets();
+        if targets.is_empty() {
+            self.status_message = "No review comments in diff.".to_string();
+            return;
+        }
+
+        let current_pos = self.current_comment_progress().map(|(cur, _)| cur.saturating_sub(1)).unwrap_or(0);
+        let prev_idx = if current_pos > 0 { current_pos - 1 } else { targets.len() - 1 };
+        let target = targets[prev_idx].clone();
+
+        if self.selected_file_idx != target.file_idx {
+            self.selected_file_idx = target.file_idx;
+            self.rebuild_code_lines();
+            self.sync_diff_tree_cursor_to_selected_file();
+        }
+
+        if let Some(line_idx) = self.code_lines.iter().position(|l| match l {
+            CodeLineDisplay::CommentHeader { hunk_id, .. } => hunk_id == &target.hunk_id,
+            CodeLineDisplay::HunkHeader { hunk_id, .. } => hunk_id == &target.hunk_id,
+            CodeLineDisplay::DiffLine { hunk_id, .. } => hunk_id == &target.hunk_id,
+            _ => false,
+        }) {
+            self.code_cursor_idx = line_idx;
+            self.code_scroll_offset = line_idx.saturating_sub(3);
+        }
+
+        self.diff_pane_focus = DiffPaneFocus::CodeView;
+        self.status_message = format!(
+            "Review Comment [{}/{}]: {} • [n/N to navigate]",
+            prev_idx + 1,
+            targets.len(),
+            target.title
+        );
     }
 
     /// Checks whether two agent panels should be displayed simultaneously
@@ -1210,37 +1591,10 @@ impl App {
                     let mut conv_id = extract_session_id_from_agent(&agent);
 
                     if conv_id.is_none() && parsed_kind == crate::config::AgentKind::Agy {
-                        if let Some(ref h) = self.herdr {
-                            if let Some(proc_resp) = h.call_sync("pane.process_info", serde_json::json!({ "pane_id": &agent.pane_id })) {
-                                if let Some(info) = proc_resp.get("result").and_then(|r| r.get("process_info")) {
-                                    let mut pids = Vec::new();
-                                    if let Some(fg) = info.get("foreground_processes").and_then(|v| v.as_array()) {
-                                        for p in fg {
-                                            if let Some(pid) = p.get("pid").and_then(|v| v.as_u64()) {
-                                                pids.push(pid as u32);
-                                            }
-                                        }
-                                    }
-                                    if let Some(sp) = info.get("shell_pid").and_then(|v| v.as_u64()) {
-                                        pids.push(sp as u32);
-                                    }
-                                    for pid in pids {
-                                        if let Some(cid) = crate::markdown_renderer::detect_presence_lock_for_pid(pid) {
-                                            conv_id = Some(cid);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if conv_id.is_none() && parsed_kind == crate::config::AgentKind::Agy {
-                        let screen_text = self.herdr.as_ref().and_then(|h| h.read_pane_text(&agent.pane_id, 100));
-                        conv_id = crate::markdown_renderer::detect_active_antigravity_conversation_id(
+                        conv_id = resolve_pane_antigravity_conversation_id(
+                            self.herdr.as_ref(),
+                            Some(&agent.pane_id),
                             agent.cwd.as_deref().or(self.repo_path.as_deref()),
-                            screen_text.as_deref(),
-                            None,
                         );
                     }
 

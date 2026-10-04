@@ -82,10 +82,7 @@ fn copy_with(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("{} exited with {}", cmd, status),
-        ))
+        Err(std::io::Error::other(format!("{} exited with {}", cmd, status)))
     }
 }
 
@@ -93,7 +90,7 @@ fn copy_osc52(text: &str) {
     use std::io::stdout;
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = text.as_bytes();
-    let mut b64 = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut b64 = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0];
         let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };

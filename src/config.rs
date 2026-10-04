@@ -174,9 +174,10 @@ impl std::fmt::Display for AgentKind {
 }
 
 /// Placement mode when opening Interactive Diff in Herdr
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DiffPlacement {
+    #[default]
     Split,
     Tab,
 }
@@ -202,12 +203,6 @@ impl DiffPlacement {
             DiffPlacement::Split => "Vertical Split (Left)",
             DiffPlacement::Tab => "New Tab",
         }
-    }
-}
-
-impl Default for DiffPlacement {
-    fn default() -> Self {
-        DiffPlacement::Split
     }
 }
 

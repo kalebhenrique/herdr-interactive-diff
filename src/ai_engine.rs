@@ -253,11 +253,15 @@ pub fn resolve_hunk_id_for_finding(
         .unwrap_or(hunk_candidate)
         .trim();
 
+    if clean_candidate.is_empty() || clean_candidate == "file_path" || clean_candidate == "unknown" {
+        return None;
+    }
+
     // 3. Procura nos arquivos por correspondência de caminho ou basename
     for file in &diff.files {
         let is_match = file.new_path == clean_candidate
-            || file.new_path.ends_with(clean_candidate)
-            || clean_candidate.ends_with(&file.new_path)
+            || file.new_path.ends_with(&format!("/{}", clean_candidate))
+            || clean_candidate.ends_with(&format!("/{}", file.new_path))
             || std::path::Path::new(&file.new_path)
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -382,10 +386,6 @@ pub fn extract_classifications_from_review(review_text: &str, diff: &GitDiff) ->
                     if let Some(first_hunk) = file.hunks.first() {
                         current_hunk_id = Some(first_hunk.id.clone());
                     }
-                }
-            } else if diff.files.len() == 1 {
-                if let Some(first_hunk) = diff.files[0].hunks.first() {
-                    current_hunk_id = Some(first_hunk.id.clone());
                 }
             }
         } else if trimmed.starts_with("Why:") || trimmed.starts_with("Motivo:") {
@@ -611,5 +611,29 @@ Fix: Validate prop types
         let parsed_md = extract_classifications_from_review(review_md, &diff);
         assert_eq!(parsed_md.len(), 1);
         assert_eq!(&parsed_md[0].hunk_id, expected_hunk_id);
+    }
+
+    #[test]
+    fn test_untracked_single_file_does_not_inherit_unrelated_past_findings() {
+        let raw_diff = r#"diff --git a/scripts/setup.sh b/scripts/setup.sh
+new file mode 100644
+index 0000000..abcdef1
+--- /dev/null
++++ b/scripts/setup.sh
+@@ -0,0 +1,5 @@
++#!/usr/bin/env bash
++echo "Setup"
++"#;
+        let diff = GitDiff::parse(raw_diff).unwrap();
+        assert_eq!(diff.files.len(), 1);
+
+        // A past review about a completely different committed file (e.g. src/auth/session.rs)
+        let old_review = r#"
+**[HIGH] [security] [src/auth/session.rs:14] DEREF POINTER!**
+Why: Falta checar ponteiro nulo.
+Fix: Usar Option.
+"#;
+        let parsed = extract_classifications_from_review(old_review, &diff);
+        assert!(parsed.is_empty(), "Unrelated past review findings must NOT be attached to unrelated untracked files");
     }
 }

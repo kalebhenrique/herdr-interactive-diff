@@ -229,7 +229,6 @@ pub fn detect_active_antigravity_conversation_id(
                 candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
                 candidates.truncate(20);
 
-                let mut first_match = None;
                 for (conv_id, _) in &candidates {
                     let transcript_path = brain_dir
                         .join(conv_id)
@@ -240,30 +239,12 @@ pub fn detect_active_antigravity_conversation_id(
                             let reader = BufReader::new(file);
                             for line in reader.lines().take(40).flatten() {
                                 if line.contains(&target_dir) {
-                                    if first_match.is_none() {
-                                        first_match = Some(conv_id.clone());
-                                    }
-                                    let has_artifacts = fs::read_dir(brain_dir.join(conv_id))
-                                        .map(|entries| {
-                                            entries.flatten().any(|e| {
-                                                let p = e.path();
-                                                p.is_file()
-                                                    && p.extension().and_then(|s| s.to_str()) == Some("md")
-                                                    && !e.file_name().to_string_lossy().starts_with('.')
-                                            })
-                                        })
-                                        .unwrap_or(false);
-                                    if has_artifacts {
-                                        return Some(conv_id.clone());
-                                    }
-                                    break;
+                                    // The most recent conversation in target_dir is the current active session
+                                    return Some(conv_id.clone());
                                 }
                             }
                         }
                     }
-                }
-                if let Some(m) = first_match {
-                    return Some(m);
                 }
             }
         }
@@ -345,7 +326,7 @@ pub fn read_claude_transcript_file(path: &Path) -> Option<String> {
     let reader = BufReader::new(file);
     let mut last_assistant_text = None;
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if line.contains("\"role\":\"assistant\"") || line.contains("\"type\":\"assistant\"") {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                 let text_parts: Vec<String> = if let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) {
@@ -546,6 +527,399 @@ pub fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+fn lang_icon(lang: &str) -> &'static str {
+    match lang.to_lowercase().as_str() {
+        "rust" | "rs" => " rust",
+        "ruby" | "rb" => " ruby",
+        "python" | "py" => " python",
+        "javascript" | "js" => " javascript",
+        "typescript" | "ts" => " typescript",
+        "go" => " go",
+        "c" | "cpp" => " cpp",
+        "json" => " json",
+        "yaml" | "yml" => " yaml",
+        "toml" => " toml",
+        "bash" | "sh" | "zsh" => " bash",
+        "markdown" | "md" => " markdown",
+        "html" => " html",
+        "css" => " css",
+        "sql" => "󰆼 sql",
+        "mermaid" => "󰈙 mermaid",
+        _ => " code",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SequenceParticipant {
+    id: String,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+enum SequenceItem {
+    Message {
+        from: String,
+        to: String,
+        is_dashed: bool,
+        is_async: bool,
+        label: String,
+        number: Option<usize>,
+    },
+    Note {
+        target: String,
+        text: String,
+    },
+    Divider(String),
+}
+
+/// Renderiza diagramas de sequência mermaid no terminal em estilo ASCII/Unicode box-drawing
+pub fn render_sequence_diagram(diagram_lines: &[&str], width: usize) -> Vec<Line<'static>> {
+    let mut participants: Vec<SequenceParticipant> = Vec::new();
+    let mut items: Vec<SequenceItem> = Vec::new();
+    let mut autonumber = false;
+    let mut msg_counter = 1;
+
+    for line in diagram_lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("%%") || trimmed.eq_ignore_ascii_case("sequenceDiagram") {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("autonumber") {
+            autonumber = true;
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("participant ").or_else(|| trimmed.strip_prefix("actor ")) {
+            let rest = rest.trim();
+            let (id, label) = if let Some((id_part, label_part)) = rest.split_once(" as ") {
+                (id_part.trim().to_string(), label_part.trim().to_string())
+            } else {
+                (rest.to_string(), rest.to_string())
+            };
+            if !participants.iter().any(|p| p.id == id) {
+                participants.push(SequenceParticipant { id, label });
+            }
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("Note ") {
+            if let Some((target_part, note_text)) = rest.split_once(':') {
+                let target = target_part
+                    .strip_prefix("over ")
+                    .or_else(|| target_part.strip_prefix("right of "))
+                    .or_else(|| target_part.strip_prefix("left of "))
+                    .unwrap_or(target_part)
+                    .trim();
+                let first_target = target.split(',').next().unwrap_or(target).trim().to_string();
+                items.push(SequenceItem::Note {
+                    target: first_target,
+                    text: note_text.trim().to_string(),
+                });
+                continue;
+            }
+        }
+
+        if trimmed.starts_with("loop ") || trimmed.starts_with("alt ") || trimmed.starts_with("opt ") || trimmed.starts_with("rect ") {
+            items.push(SequenceItem::Divider(trimmed.to_string()));
+            continue;
+        }
+        if trimmed == "end" || trimmed.starts_with("else") {
+            items.push(SequenceItem::Divider(trimmed.to_string()));
+            continue;
+        }
+
+        let arrows = [
+            ("-->>", true, false),
+            ("->>", false, false),
+            ("-->", true, false),
+            ("->", false, false),
+            ("--)", true, true),
+            ("-)", false, true),
+        ];
+
+        let mut matched = false;
+        for &(arrow, is_dashed, is_async) in &arrows {
+            if let Some(pos) = trimmed.find(arrow) {
+                let from = trimmed[..pos].trim().to_string();
+                let after_arrow = &trimmed[pos + arrow.len()..];
+                let (to, label) = if let Some((to_part, label_part)) = after_arrow.split_once(':') {
+                    (to_part.trim().to_string(), label_part.trim().to_string())
+                } else {
+                    (after_arrow.trim().to_string(), String::new())
+                };
+
+                if !participants.iter().any(|p| p.id == from) {
+                    participants.push(SequenceParticipant { id: from.clone(), label: from.clone() });
+                }
+                if !participants.iter().any(|p| p.id == to) {
+                    participants.push(SequenceParticipant { id: to.clone(), label: to.clone() });
+                }
+
+                let num = if autonumber {
+                    let n = msg_counter;
+                    msg_counter += 1;
+                    Some(n)
+                } else {
+                    None
+                };
+
+                items.push(SequenceItem::Message {
+                    from,
+                    to,
+                    is_dashed,
+                    is_async,
+                    label,
+                    number: num,
+                });
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched && (trimmed.starts_with("activate ") || trimmed.starts_with("deactivate ")) {
+            continue;
+        }
+    }
+
+    if participants.is_empty() {
+        let mut lines = Vec::new();
+        for l in diagram_lines {
+            lines.push(Line::from(vec![
+                Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(l.to_string(), Style::default().fg(Color::Rgb(205, 214, 244))),
+            ]));
+        }
+        return lines;
+    }
+
+    let num_p = participants.len();
+    let col_w = (width.saturating_sub(6) / num_p).max(14);
+    let total_diagram_w = col_w * num_p;
+
+    let center_cols: Vec<usize> = (0..num_p)
+        .map(|idx| idx * col_w + col_w / 2)
+        .collect();
+
+    let mut lines = Vec::new();
+
+    let dashes_right = total_diagram_w.saturating_sub(22).max(2);
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  ╭── 󰈙 sequenceDiagram {}╮", "─".repeat(dashes_right)),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let mut top_box_line = String::from("  ");
+    for _ in participants.iter() {
+        let box_len = col_w.saturating_sub(2).max(6);
+        let pad = col_w.saturating_sub(box_len);
+        let left_pad = pad / 2;
+        let right_pad = pad - left_pad;
+        top_box_line.push_str(&" ".repeat(left_pad));
+        top_box_line.push_str(&format!("╭{}╮", "─".repeat(box_len.saturating_sub(2))));
+        top_box_line.push_str(&" ".repeat(right_pad));
+    }
+    lines.push(Line::from(vec![Span::styled(top_box_line, Style::default().fg(Color::Cyan))]));
+
+    let mut mid_box_spans = vec![Span::raw("  ")];
+    for p in &participants {
+        let box_len = col_w.saturating_sub(2).max(6);
+        let pad = col_w.saturating_sub(box_len);
+        let left_pad = pad / 2;
+        let right_pad = pad - left_pad;
+        mid_box_spans.push(Span::raw(" ".repeat(left_pad)));
+        mid_box_spans.push(Span::styled("│", Style::default().fg(Color::Cyan)));
+
+        let max_label_len = box_len.saturating_sub(2);
+        let truncated = if p.label.chars().count() > max_label_len {
+            let mut s: String = p.label.chars().take(max_label_len.saturating_sub(1)).collect();
+            s.push('…');
+            s
+        } else {
+            p.label.clone()
+        };
+        let label_pad = max_label_len.saturating_sub(truncated.chars().count());
+        let l_pad = label_pad / 2;
+        let r_pad = label_pad - l_pad;
+        mid_box_spans.push(Span::raw(" ".repeat(l_pad)));
+        mid_box_spans.push(Span::styled(truncated, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        mid_box_spans.push(Span::raw(" ".repeat(r_pad)));
+        mid_box_spans.push(Span::styled("│", Style::default().fg(Color::Cyan)));
+        mid_box_spans.push(Span::raw(" ".repeat(right_pad)));
+    }
+    lines.push(Line::from(mid_box_spans));
+
+    let mut bot_box_line = String::from("  ");
+    for _ in participants.iter() {
+        let box_len = col_w.saturating_sub(2).max(6);
+        let pad = col_w.saturating_sub(box_len);
+        let left_pad = pad / 2;
+        let right_pad = pad - left_pad;
+        let inner_len = box_len.saturating_sub(2);
+        let mid = inner_len / 2;
+        let l_dashes = "─".repeat(mid);
+        let r_dashes = "─".repeat(inner_len.saturating_sub(mid + 1));
+        bot_box_line.push_str(&" ".repeat(left_pad));
+        bot_box_line.push_str(&format!("╰{}┬{}╯", l_dashes, r_dashes));
+        bot_box_line.push_str(&" ".repeat(right_pad));
+    }
+    lines.push(Line::from(vec![Span::styled(bot_box_line, Style::default().fg(Color::Cyan))]));
+
+    let make_lifeline_row = || -> String {
+        let mut row = vec![' '; total_diagram_w + 4];
+        row[0] = ' ';
+        row[1] = ' ';
+        for &col in &center_cols {
+            if col + 2 < row.len() {
+                row[col + 2] = '│';
+            }
+        }
+        row.into_iter().collect()
+    };
+
+    lines.push(Line::from(vec![Span::styled(make_lifeline_row(), Style::default().fg(Color::DarkGray))]));
+
+    for item in items {
+        match item {
+            SequenceItem::Message { from, to, is_dashed, is_async, label, number } => {
+                let from_idx = participants.iter().position(|p| p.id == from).unwrap_or(0);
+                let to_idx = participants.iter().position(|p| p.id == to).unwrap_or(0);
+
+                let label_text = if let Some(num) = number {
+                    format!("[{}] {}", num, label)
+                } else {
+                    label.clone()
+                };
+
+                if from_idx == to_idx {
+                    let c = center_cols[from_idx];
+                    let mut row1 = make_lifeline_row().chars().collect::<Vec<char>>();
+                    let mut row2 = make_lifeline_row().chars().collect::<Vec<char>>();
+                    let loop_width = 18.min(col_w);
+
+                    let l_str = format!("╭── {} ──╮", label_text);
+                    let l_chars: Vec<char> = l_str.chars().collect();
+                    for (offset, ch) in l_chars.iter().enumerate() {
+                        if c + 2 + offset < row1.len() {
+                            row1[c + 2 + offset] = *ch;
+                        }
+                    }
+
+                    let arrow_char = if is_async { '>' } else { '►' };
+                    let ret_str = format!("╰{}─{}", "─".repeat(loop_width.saturating_sub(4)), arrow_char);
+                    let ret_chars: Vec<char> = ret_str.chars().collect();
+                    for (offset, ch) in ret_chars.iter().enumerate() {
+                        if c + 2 + offset < row2.len() {
+                            row2[c + 2 + offset] = *ch;
+                        }
+                    }
+
+                    lines.push(Line::from(vec![Span::styled(row1.into_iter().collect::<String>(), Style::default().fg(Color::Yellow))]));
+                    lines.push(Line::from(vec![Span::styled(row2.into_iter().collect::<String>(), Style::default().fg(Color::Yellow))]));
+                    lines.push(Line::from(vec![Span::styled(make_lifeline_row(), Style::default().fg(Color::DarkGray))]));
+                } else {
+                    let (start_idx, end_idx, is_l_to_r) = if from_idx < to_idx {
+                        (from_idx, to_idx, true)
+                    } else {
+                        (to_idx, from_idx, false)
+                    };
+
+                    let c_start = center_cols[start_idx] + 2;
+                    let c_end = center_cols[end_idx] + 2;
+                    let span_len = c_end.saturating_sub(c_start);
+
+                    let arrow_char = if is_async { '>' } else { '►' };
+                    let fill_char = if is_dashed { '┄' } else { '─' };
+
+                    let mut row = make_lifeline_row().chars().collect::<Vec<char>>();
+
+                    let max_lbl = span_len.saturating_sub(6);
+                    let display_lbl = if label_text.chars().count() > max_lbl && max_lbl > 3 {
+                        let mut s: String = label_text.chars().take(max_lbl - 1).collect();
+                        s.push('…');
+                        s
+                    } else {
+                        label_text
+                    };
+
+                    let lbl_len = display_lbl.chars().count();
+                    let rem_dashes = span_len.saturating_sub(lbl_len + 4);
+                    let l_dashes = rem_dashes / 2;
+                    let r_dashes = rem_dashes - l_dashes;
+
+                    let msg_segment = if is_l_to_r {
+                        format!(
+                            "├{} {} {}{}",
+                            fill_char.to_string().repeat(l_dashes),
+                            display_lbl,
+                            fill_char.to_string().repeat(r_dashes),
+                            arrow_char
+                        )
+                    } else {
+                        let left_arrow = if is_async { '<' } else { '◄' };
+                        format!(
+                            "{}{} {} {}┤",
+                            left_arrow,
+                            fill_char.to_string().repeat(l_dashes),
+                            display_lbl,
+                            fill_char.to_string().repeat(r_dashes)
+                        )
+                    };
+
+                    let seg_chars: Vec<char> = msg_segment.chars().collect();
+                    for (offset, ch) in seg_chars.iter().enumerate() {
+                        if c_start + offset < row.len() && (is_l_to_r || c_start + offset <= c_end) {
+                            row[c_start + offset] = *ch;
+                        }
+                    }
+
+                    let row_str: String = row.into_iter().collect();
+                    lines.push(Line::from(vec![Span::styled(row_str, Style::default().fg(Color::Yellow))]));
+                    lines.push(Line::from(vec![Span::styled(make_lifeline_row(), Style::default().fg(Color::DarkGray))]));
+                }
+            }
+            SequenceItem::Note { target, text } => {
+                let p_idx = participants.iter().position(|p| p.id == target).unwrap_or(0);
+                let c = center_cols[p_idx];
+                let mut row = make_lifeline_row().chars().collect::<Vec<char>>();
+                let note_str = format!("┌─ 󰋖 Note: {} ─┐", text);
+                for (offset, ch) in note_str.chars().enumerate() {
+                    if c + 2 + offset < row.len() {
+                        row[c + 2 + offset] = ch;
+                    }
+                }
+                lines.push(Line::from(vec![Span::styled(row.into_iter().collect::<String>(), Style::default().fg(Color::LightMagenta))]));
+                lines.push(Line::from(vec![Span::styled(make_lifeline_row(), Style::default().fg(Color::DarkGray))]));
+            }
+            SequenceItem::Divider(title) => {
+                let div_str = format!("  ├── [{}] {}", title, "─".repeat(total_diagram_w.saturating_sub(title.len() + 8).max(4)));
+                lines.push(Line::from(vec![Span::styled(div_str, Style::default().fg(Color::LightBlue))]));
+                lines.push(Line::from(vec![Span::styled(make_lifeline_row(), Style::default().fg(Color::DarkGray))]));
+            }
+        }
+    }
+
+    let mut bot_line = vec![' '; total_diagram_w + 4];
+    bot_line[0] = ' ';
+    bot_line[1] = ' ';
+    for &col in &center_cols {
+        if col + 2 < bot_line.len() {
+            bot_line[col + 2] = '┴';
+        }
+    }
+    lines.push(Line::from(vec![Span::styled(bot_line.into_iter().collect::<String>(), Style::default().fg(Color::Cyan))]));
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  ╰{}╯", "─".repeat(total_diagram_w.max(20))),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+
+    lines
+}
+
 /// Renderizador de Markdown de alta fidelidade inspirado em render-markdown.nvim para Ratatui
 #[allow(dead_code)]
 pub fn parse_markdown_to_lines(text: &str) -> Vec<Line<'static>> {
@@ -567,11 +941,11 @@ pub fn parse_markdown_with_width(text: &str, width: usize) -> Vec<Line<'static>>
     while i < raw_lines.len() {
         let raw_line = raw_lines[i];
         let trimmed = raw_line.trim_end();
+        let ltrim = trimmed.trim_start();
 
-        // 1. Blocos de Código Fenced (```lang ... ```)
-        if trimmed.starts_with("```") {
-            active_callout_color = None;
-            if in_code_block {
+        // 1. Fechamento de Bloco de Código se já aberto
+        if in_code_block {
+            if ltrim.starts_with("```") {
                 in_code_block = false;
                 let dashes = box_width.saturating_sub(2).max(2);
                 let bottom_str = format!("  ╰{}╯", "─".repeat(dashes));
@@ -579,43 +953,95 @@ pub fn parse_markdown_with_width(text: &str, width: usize) -> Vec<Line<'static>>
                     Span::styled(bottom_str, Style::default().fg(Color::DarkGray)),
                 ]));
                 code_lang.clear();
-            } else {
-                in_code_block = true;
-                let lang = trimmed.trim_start_matches('`').trim();
-                code_lang = if lang.is_empty() { "code".to_string() } else { lang.to_string() };
-                let icon = match code_lang.to_lowercase().as_str() {
-                    "rust" | "rs" => " rust",
-                    "ruby" | "rb" => " ruby",
-                    "python" | "py" => " python",
-                    "javascript" | "js" => " javascript",
-                    "typescript" | "ts" => " typescript",
-                    "go" => " go",
-                    "c" | "cpp" => " cpp",
-                    "json" => " json",
-                    "yaml" | "yml" => " yaml",
-                    "toml" => " toml",
-                    "bash" | "sh" | "zsh" => " bash",
-                    "markdown" | "md" => " markdown",
-                    "html" => " html",
-                    "css" => " css",
-                    "sql" => "󰆼 sql",
-                    _ => " code",
+                i += 1;
+                continue;
+            }
+
+            // Linha interna do bloco de código
+            let code_content = raw_line.strip_prefix("  ").unwrap_or(trimmed);
+            lines.push(Line::from(vec![
+                Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(code_content.to_string(), Style::default().fg(Color::Rgb(205, 214, 244))),
+            ]));
+            i += 1;
+            continue;
+        }
+
+        // 2. Abertura de Blocos de Código Fenced (suporta indentado como sob listas e inline ```bash cmd```)
+        let bullet_stripped = ltrim
+            .strip_prefix("* ")
+            .or_else(|| ltrim.strip_prefix("- "))
+            .unwrap_or(ltrim);
+
+        if bullet_stripped.starts_with("```") {
+            active_callout_color = None;
+            let after_open = bullet_stripped.strip_prefix("```").unwrap_or("");
+
+            // Caso A: Bloco em uma linha única (ex: ```bash yarn lint```)
+            if let Some(close_pos) = after_open.find("```") {
+                let inside = after_open[..close_pos].trim();
+                let (lang, content) = if let Some(space_idx) = inside.find(|c: char| c.is_whitespace()) {
+                    let possible_lang = &inside[..space_idx];
+                    let rest = inside[space_idx..].trim();
+                    match possible_lang.to_lowercase().as_str() {
+                        "bash" | "sh" | "zsh" | "rust" | "rs" | "json" | "yaml" | "yml" | "toml" | "js" | "ts" | "py" | "diff" => {
+                            (possible_lang, rest)
+                        }
+                        _ => ("bash", inside)
+                    }
+                } else if inside.eq_ignore_ascii_case("bash") || inside.eq_ignore_ascii_case("sh") {
+                    ("bash", "")
+                } else {
+                    ("bash", inside)
                 };
 
+                let icon = lang_icon(lang);
                 let dashes_right = box_width.saturating_sub(icon.width() + 6).max(2);
                 let header_str = format!("  ╭── {} {}╮", icon, "─".repeat(dashes_right));
                 lines.push(Line::from(vec![
                     Span::styled(header_str, Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
                 ]));
+                if !content.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(content.to_string(), Style::default().fg(Color::Rgb(205, 214, 244))),
+                    ]));
+                }
+                let dashes = box_width.saturating_sub(2).max(2);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  ╰{}╯", "─".repeat(dashes)), Style::default().fg(Color::DarkGray)),
+                ]));
+                i += 1;
+                continue;
             }
-            i += 1;
-            continue;
-        }
 
-        if in_code_block {
+            // Caso B: Diagrama de Sequência Mermaid
+            let lang = after_open.trim();
+            if lang.eq_ignore_ascii_case("mermaid") || lang.eq_ignore_ascii_case("sequenceDiagram") {
+                let mut block_lines = Vec::new();
+                let mut j = i + 1;
+                while j < raw_lines.len() && !raw_lines[j].trim_start().starts_with("```") {
+                    block_lines.push(raw_lines[j]);
+                    j += 1;
+                }
+                let is_sequence = lang.eq_ignore_ascii_case("sequenceDiagram")
+                    || block_lines.iter().any(|l| l.trim().starts_with("sequenceDiagram"));
+                if is_sequence {
+                    let seq_rendered = render_sequence_diagram(&block_lines, box_width);
+                    lines.extend(seq_rendered);
+                    i = if j < raw_lines.len() { j + 1 } else { j };
+                    continue;
+                }
+            }
+
+            // Caso C: Bloco multilinhas normal
+            in_code_block = true;
+            code_lang = if lang.is_empty() { "code".to_string() } else { lang.to_string() };
+            let icon = lang_icon(&code_lang);
+            let dashes_right = box_width.saturating_sub(icon.width() + 6).max(2);
+            let header_str = format!("  ╭── {} {}╮", icon, "─".repeat(dashes_right));
             lines.push(Line::from(vec![
-                Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(trimmed.to_string(), Style::default().fg(Color::Rgb(205, 214, 244))),
+                Span::styled(header_str, Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
             ]));
             i += 1;
             continue;
@@ -1361,5 +1787,57 @@ println!("hello world");
         let mut len = 0;
         let res = read_latest_claude_session_text_if_modified(Some("/nonexistent/repo"), &mut mtime, &mut len);
         assert_eq!(res, ClaudeTranscriptResult::NoSessionFile);
+    }
+
+    #[test]
+    fn test_sequence_diagram_rendering() {
+        let md = r#"
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant H as Herdr
+    participant A as Agent
+    U->>H: Open Diff
+    H->>A: Send Prompt
+    A-->>H: Response
+    H-->>U: Render UI
+    Note over H: Sync State
+```
+"#;
+        let lines = parse_markdown_with_width(md, 80);
+        let joined: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        assert!(joined.contains("sequenceDiagram"));
+        assert!(joined.contains("User"));
+        assert!(joined.contains("Herdr"));
+        assert!(joined.contains("Agent"));
+        assert!(joined.contains("Open Diff"));
+        assert!(joined.contains("Send Prompt"));
+        assert!(joined.contains("Response"));
+        assert!(joined.contains("Render UI"));
+        assert!(joined.contains("Note: Sync State"));
+        assert!(joined.contains('┴'));
+    }
+
+    #[test]
+    fn test_indented_and_single_line_bash_code_blocks() {
+        // 1. Single-line code fence
+        let md_single = "```bash yarn lint```";
+        let lines_single = parse_markdown_with_width(md_single, 80);
+        let joined_single: String = lines_single.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        assert!(joined_single.contains("yarn lint"));
+        assert!(!joined_single.contains("```bash"));
+
+        // 2. Indented block under bullet point
+        let md_indented = r#"
+* Executar o linter no repositório inteiro:
+  ```bash
+  cargo test
+  ```
+"#;
+        let lines_indented = parse_markdown_with_width(md_indented, 80);
+        let joined_indented: String = lines_indented.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        assert!(joined_indented.contains("cargo test"));
+        assert!(!joined_indented.contains("```bash"));
     }
 }

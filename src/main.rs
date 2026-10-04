@@ -635,12 +635,7 @@ async fn main() -> Result<()> {
                                 if is_over_tooltip {
                                     app.scroll_tooltip(-3);
                                 } else if app.show_diff_tree && mouse.column < 34 {
-                                    app.selected_file_idx = app.selected_file_idx.saturating_sub(1);
-                                    app.code_cursor_idx = 0;
-                                    app.code_scroll_offset = 0;
-                                    app.show_tooltip = false;
-                                    app.tooltip_scroll_offset = 0;
-                                    app.rebuild_code_lines();
+                                    app.diff_tree_prev();
                                 } else {
                                     app.code_cursor_idx = app.code_cursor_idx.saturating_sub(3);
                                 }
@@ -679,14 +674,7 @@ async fn main() -> Result<()> {
                                 if is_over_tooltip {
                                     app.scroll_tooltip(3);
                                 } else if app.show_diff_tree && mouse.column < 34 {
-                                    if app.selected_file_idx + 1 < app.diff.files.len() {
-                                        app.selected_file_idx += 1;
-                                        app.code_cursor_idx = 0;
-                                        app.code_scroll_offset = 0;
-                                        app.show_tooltip = false;
-                                        app.tooltip_scroll_offset = 0;
-                                        app.rebuild_code_lines();
-                                    }
+                                    app.diff_tree_next();
                                 } else if app.code_cursor_idx + 3 < app.code_lines.len() {
                                     app.code_cursor_idx += 3;
                                 }
@@ -729,13 +717,11 @@ async fn main() -> Result<()> {
                                 if app.show_diff_tree && mouse.column < 34 {
                                     app.diff_pane_focus = DiffPaneFocus::FileList;
                                     if mouse.row >= 4 {
-                                        let clicked_file = (mouse.row - 4) as usize;
-                                        if clicked_file < app.diff.files.len() {
-                                            app.selected_file_idx = clicked_file;
-                                            app.code_cursor_idx = 0;
-                                            app.code_scroll_offset = 0;
-                                            app.show_tooltip = false;
-                                            app.rebuild_code_lines();
+                                        let clicked_row = (mouse.row - 4) as usize;
+                                        let tree = app.build_diff_tree();
+                                        if clicked_row < tree.len() {
+                                            app.diff_tree_cursor = clicked_row;
+                                            app.diff_tree_toggle_current();
                                         }
                                     }
                                 } else {
@@ -895,7 +881,11 @@ async fn main() -> Result<()> {
                     // Help modal (?) takes priority when open
                     if app.show_help {
                         match key.code {
-                            KeyCode::Esc | KeyCode::Enter | KeyCode::F(12) => {
+                            KeyCode::Esc
+                            | KeyCode::Enter
+                            | KeyCode::F(12)
+                            | KeyCode::Char('?')
+                            | KeyCode::Char('q') => {
                                 app.show_help = false;
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
@@ -923,18 +913,34 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Global shortcut to Quit: Ctrl+Q
-                    if is_ctrl && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q')) {
+                    // AI Picker Modal input handling
+                    if app.show_agent_picker {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') => app.close_agent_picker(),
+                            KeyCode::Enter => app.confirm_agent_picker(),
+                            KeyCode::Tab | KeyCode::Left | KeyCode::Right => app.toggle_agent_picker_target(),
+                            KeyCode::Char('j') | KeyCode::Down => app.agent_picker_next(),
+                            KeyCode::Char('k') | KeyCode::Up => app.agent_picker_prev(),
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // Global shortcut to Quit: q or Ctrl+Q
+                    if (!is_ctrl && key.code == KeyCode::Char('q'))
+                        || (is_ctrl && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q')))
+                    {
                         app.should_quit = true;
                         continue;
                     }
 
-                    // Global shortcut for Help: Ctrl+H, Ctrl+/, or F12
-                    if (is_ctrl
-                        && (key.code == KeyCode::Char('h')
-                            || key.code == KeyCode::Char('H')
-                            || key.code == KeyCode::Char('/')
-                            || key.code == KeyCode::Char('?')))
+                    // Global shortcut for Help: ? or F12 or Ctrl+H
+                    if (!is_ctrl && key.code == KeyCode::Char('?'))
+                        || (is_ctrl
+                            && (key.code == KeyCode::Char('h')
+                                || key.code == KeyCode::Char('H')
+                                || key.code == KeyCode::Char('/')
+                                || key.code == KeyCode::Char('?')))
                         || key.code == KeyCode::F(12)
                     {
                         app.show_help = true;
@@ -942,25 +948,32 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Global shortcut: Ctrl+R triggers 5-lens code review to Review AI
-                    if is_ctrl && (key.code == KeyCode::Char('r') || key.code == KeyCode::Char('R')) {
-                        app.trigger_review();
-                        continue;
-                    }
-
-                    // Global shortcut: Ctrl+A opens AI Picker Modal
-                    if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+                    // Global shortcut: a / A / Ctrl+A opens AI Picker Modal
+                    if key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A') {
                         app.open_agent_picker();
                         continue;
                     }
 
-                    // Global shortcut: Ctrl+S copies review to Primary AI for anti-overengineering validation
-                    if is_ctrl && (key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S')) {
+                    // Global shortcut: s / S / Ctrl+S copies review to Primary AI for anti-overengineering validation
+                    if key.code == KeyCode::Char('s') || key.code == KeyCode::Char('S') {
                         app.trigger_validation();
                         continue;
                     }
 
-                    // Global shortcut to Cycle Tabs: Ctrl+T or Tab
+                    // Global shortcut: r / R / F5 / Ctrl+R refreshes diff or artifacts
+                    if key.code == KeyCode::Char('r') || key.code == KeyCode::Char('R') || key.code == KeyCode::F(5) {
+                        match app.active_tab {
+                            ActiveTab::GitDiff => {
+                                app.refresh_diff();
+                            }
+                            ActiveTab::Artifacts => {
+                                app.refresh_artifacts();
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Global shortcut to Cycle Tabs: Tab or Ctrl+T
                     if (is_ctrl && (key.code == KeyCode::Char('t') || key.code == KeyCode::Char('T')))
                         || (key.code == KeyCode::Tab && !app.is_asking_question && !app.show_agent_picker && !app.show_help)
                     {
@@ -978,29 +991,16 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Global Tab Shortcuts: F1 / Ctrl+1 (Git Diff), F2 / Ctrl+2 (Artifacts)
-                    if key.code == KeyCode::F(1) || (is_ctrl && key.code == KeyCode::Char('1')) {
+                    // Global Tab Shortcuts: 1 / F1 / Ctrl+1 (Git Diff), 2 / F2 / Ctrl+2 (Artifacts)
+                    if (!is_ctrl && key.code == KeyCode::Char('1')) || key.code == KeyCode::F(1) || (is_ctrl && key.code == KeyCode::Char('1')) {
                         app.sync_review_to_diff();
                         app.refresh_diff();
                         app.active_tab = ActiveTab::GitDiff;
                         continue;
                     }
-                    if key.code == KeyCode::F(2) || (is_ctrl && key.code == KeyCode::Char('2')) {
+                    if (!is_ctrl && key.code == KeyCode::Char('2')) || key.code == KeyCode::F(2) || (is_ctrl && key.code == KeyCode::Char('2')) {
                         app.refresh_artifacts();
                         app.active_tab = ActiveTab::Artifacts;
-                        continue;
-                    }
-
-                    // AI Picker Modal input handling
-                    if app.show_agent_picker {
-                        match key.code {
-                            KeyCode::Esc => app.close_agent_picker(),
-                            KeyCode::Enter => app.confirm_agent_picker(),
-                            KeyCode::Tab | KeyCode::Left | KeyCode::Right => app.toggle_agent_picker_target(),
-                            KeyCode::Char('j') | KeyCode::Down => app.agent_picker_next(),
-                            KeyCode::Char('k') | KeyCode::Up => app.agent_picker_prev(),
-                            _ => {}
-                        }
                         continue;
                     }
 
@@ -1024,27 +1024,18 @@ async fn main() -> Result<()> {
                                 continue;
                             }
                             match key.code {
-                                KeyCode::Char('q') => {
-                                    app.should_quit = true;
-                                }
-                                // Key '?' opens bottom prompt to ask AI about selected code
-                                KeyCode::Char('?') => {
+                                // Key '/' opens bottom prompt to ask AI about selected code
+                                KeyCode::Char('/') => {
                                     app.is_asking_question = true;
                                     app.question_input.clear();
                                     app.status_message = "Type your question about the selected code and press [Enter] to ask AI.".to_string();
                                 }
-                                KeyCode::Char('1') => {
-                                    app.sync_review_to_diff();
-                                    app.refresh_diff();
-                                    app.active_tab = ActiveTab::GitDiff;
+                                // Keys 'n' and 'N': jump to next / prev review comment
+                                KeyCode::Char('n') => {
+                                    app.jump_to_next_comment();
                                 }
-                                KeyCode::Char('2') => {
-                                    app.refresh_artifacts();
-                                    app.active_tab = ActiveTab::Artifacts;
-                                }
-                                // Key 'r', 'R' or F5: Refresh diff
-                                KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::F(5) if !is_ctrl => {
-                                    app.refresh_diff();
+                                KeyCode::Char('N') => {
+                                    app.jump_to_prev_comment();
                                 }
                                 // Key 'f': Toggle between Diff view and Full File view
                                 KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -1058,26 +1049,49 @@ async fn main() -> Result<()> {
                                     match app.diff_pane_focus {
                                         // FILE LIST FOCUS
                                         DiffPaneFocus::FileList => match key.code {
-                                            // Enter or 'l' / Right Arrow enters code view
-                                            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                                                app.diff_pane_focus = DiffPaneFocus::CodeView;
-                                                app.code_cursor_idx = 0;
-                                                app.code_scroll_offset = 0;
-                                                app.status_message = "Navigating code. [Esc] to return to file list.".to_string();
-                                            }
-                                            KeyCode::Char('j') | KeyCode::Down => {
-                                                if app.selected_file_idx + 1 < app.diff.files.len() {
-                                                    app.selected_file_idx += 1;
-                                                    app.code_cursor_idx = 0;
-                                                    app.code_scroll_offset = 0;
-                                                    app.rebuild_code_lines();
+                                            KeyCode::Enter => {
+                                                let tree = app.build_diff_tree();
+                                                if let Some(item) = tree.get(app.diff_tree_cursor) {
+                                                    match item {
+                                                        crate::app::DiffTreeItem::Directory { .. } => {
+                                                            app.diff_tree_toggle_current();
+                                                        }
+                                                        crate::app::DiffTreeItem::File { .. } => {
+                                                            app.diff_pane_focus = DiffPaneFocus::CodeView;
+                                                            app.code_cursor_idx = 0;
+                                                            app.code_scroll_offset = 0;
+                                                            app.status_message = "Navigating code. [Esc] to return to file list.".to_string();
+                                                        }
+                                                    }
                                                 }
                                             }
+                                            KeyCode::Char('l') | KeyCode::Right => {
+                                                let tree = app.build_diff_tree();
+                                                if let Some(item) = tree.get(app.diff_tree_cursor) {
+                                                    match item {
+                                                        crate::app::DiffTreeItem::Directory { .. } => {
+                                                            app.diff_tree_expand_current();
+                                                        }
+                                                        crate::app::DiffTreeItem::File { .. } => {
+                                                            app.diff_pane_focus = DiffPaneFocus::CodeView;
+                                                            app.code_cursor_idx = 0;
+                                                            app.code_scroll_offset = 0;
+                                                            app.status_message = "Navigating code. [Esc] to return to file list.".to_string();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Char('h') | KeyCode::Left => {
+                                                app.diff_tree_collapse_current();
+                                            }
+                                            KeyCode::Char(' ') => {
+                                                app.diff_tree_toggle_current();
+                                            }
+                                            KeyCode::Char('j') | KeyCode::Down => {
+                                                app.diff_tree_next();
+                                            }
                                             KeyCode::Char('k') | KeyCode::Up => {
-                                                app.selected_file_idx = app.selected_file_idx.saturating_sub(1);
-                                                app.code_cursor_idx = 0;
-                                                app.code_scroll_offset = 0;
-                                                app.rebuild_code_lines();
+                                                app.diff_tree_prev();
                                             }
                                             _ => {}
                                         },

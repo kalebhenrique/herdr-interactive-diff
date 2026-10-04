@@ -71,16 +71,16 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
             let repo_name = path.split('/').rfind(|s| !s.is_empty()).unwrap_or(path);
             Some((
                 format!("󰊢 herdr-interactive-diff • {}", repo_name),
-                " • Ctrl+H for help ",
+                " • ? for help ",
             ))
         } else {
             Some((
                 "󰊢 herdr-interactive-diff".to_string(),
-                " • Ctrl+H for help ",
+                " • ? for help ",
             ))
         }
     } else if area.width >= 45 {
-        Some(("󰊢 diff".to_string(), " • Ctrl+H "))
+        Some(("󰊢 diff".to_string(), " • ? "))
     } else {
         None
     };
@@ -232,7 +232,7 @@ fn render_git_diff_view(f: &mut Frame, app: &mut App, list_state: &mut ListState
     }
 }
 
-/// Renders file drawer with status badges [A], [M], [D]
+/// Renders file drawer with collapsible directory tree and status badges [A], [M], [D]
 fn render_snacks_file_drawer(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.diff_pane_focus == DiffPaneFocus::FileList;
     let border_color = if is_focused {
@@ -243,47 +243,103 @@ fn render_snacks_file_drawer(f: &mut Frame, app: &App, area: Rect) {
 
     let title = format!("  Files ({}) ", app.diff.files.len());
 
-    let mut items = Vec::new();
-    for (idx, file) in app.diff.files.iter().enumerate() {
-        let is_selected = idx == app.selected_file_idx;
-        let prefix = if is_selected { "▶ " } else { "  " };
+    let tree = app.build_diff_tree();
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let start_idx = if visible_height > 0 && app.diff_tree_cursor >= visible_height {
+        app.diff_tree_cursor - visible_height + 1
+    } else {
+        0
+    };
 
-        let (badge_fg, badge_bg) = match file.status {
-            crate::git::FileStatus::Added => (Color::Black, Color::Green),
-            crate::git::FileStatus::Modified => (Color::Black, Color::Yellow),
-            crate::git::FileStatus::Deleted => (Color::White, Color::Red),
+    let mut items = Vec::new();
+    for (idx, item) in tree.iter().enumerate().skip(start_idx) {
+        let is_cursor = idx == app.diff_tree_cursor;
+        let prefix = if is_cursor && is_focused {
+            "▶ "
+        } else if is_cursor {
+            "▷ "
+        } else {
+            "  "
         };
 
-        let file_name = file.file_name();
-        let stats_str = format!("+{} -{}", file.additions, file.deletions);
+        match item {
+            crate::app::DiffTreeItem::Directory {
+                name,
+                is_collapsed,
+                file_count,
+                depth,
+                ..
+            } => {
+                let indent = "  ".repeat(*depth);
+                let folder_icon = if *is_collapsed { "▶  " } else { "▼  " };
+                let dir_style = if is_cursor {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                };
 
-        let item = Line::from(vec![
-            Span::styled(prefix, Style::default().fg(Color::Yellow)),
-            Span::styled(
-                format!(" {} ", file.status.badge()),
-                Style::default()
-                    .fg(badge_fg)
-                    .bg(badge_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                file_name,
-                if is_selected {
+                let item_line = Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Yellow)),
+                    Span::raw(indent),
+                    Span::styled(folder_icon, dir_style),
+                    Span::styled(format!("{}/", name), dir_style),
+                    Span::styled(
+                        format!(" ({})", file_count),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+                items.push(ListItem::new(item_line));
+            }
+            crate::app::DiffTreeItem::File {
+                file_idx,
+                name,
+                depth,
+            } => {
+                let file = match app.diff.files.get(*file_idx) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let is_selected = *file_idx == app.selected_file_idx;
+                let indent = "  ".repeat(*depth);
+
+                let (badge_fg, badge_bg) = match file.status {
+                    crate::git::FileStatus::Added => (Color::Black, Color::Green),
+                    crate::git::FileStatus::Modified => (Color::Black, Color::Yellow),
+                    crate::git::FileStatus::Deleted => (Color::White, Color::Red),
+                };
+
+                let stats_str = format!("+{} -{}", file.additions, file.deletions);
+
+                let file_style = if is_cursor {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
+                } else if is_selected {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
-                },
-            ),
-            Span::styled(
-                format!(" {:>7}", stats_str),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
+                };
 
-        items.push(ListItem::new(item));
+                let item_line = Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Yellow)),
+                    Span::raw(indent),
+                    Span::styled(
+                        format!(" {} ", file.status.badge()),
+                        Style::default()
+                            .fg(badge_fg)
+                            .bg(badge_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(name.clone(), file_style),
+                    Span::styled(
+                        format!(" {:>5}", stats_str),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+                items.push(ListItem::new(item_line));
+            }
+        }
     }
 
     let list = List::new(items).block(
@@ -316,7 +372,25 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
         .map(|f| f.new_path.as_str())
         .unwrap_or("No file");
 
-    let title = format!("  {} ", file_path);
+    let title_line = if let Some((cur, total)) = app.current_comment_progress() {
+        Line::from(vec![
+            Span::styled(
+                format!("  {} ", file_path),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("• 󰌵 Comments: [{}/{}] [n/N: Jump] ", cur, total),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![Span::styled(
+            format!("  {} ", file_path),
+            Style::default().add_modifier(Modifier::BOLD),
+        )])
+    };
 
     let mut items = Vec::new();
     for row in &app.code_lines {
@@ -632,10 +706,7 @@ fn render_code_view(f: &mut Frame, app: &App, list_state: &mut ListState, area: 
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(border_color))
-                .title(Span::styled(
-                    title,
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
+                .title(title_line),
         )
         .highlight_symbol("▶ ")
         .highlight_style(
@@ -1067,7 +1138,7 @@ fn render_artifact_document_view(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(p, inner);
 }
 
-/// Help Modal with Keybindings (Ctrl+H or F12)
+/// Help Modal with Keybindings (? or F12 or Ctrl+H)
 fn render_help_modal(f: &mut Frame, app: &App) {
     let pal = app.palette;
     let area = centered_rect(76, 85, f.area());
@@ -1075,72 +1146,161 @@ fn render_help_modal(f: &mut Frame, app: &App) {
 
     let lines = vec![
         Line::from(vec![Span::styled(
-            "󰌌 GLOBAL NAVIGATION & SHORTCUTS",
+            "󰌌 GLOBAL SHORTCUTS",
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         )]),
         Line::from("──────────────────────────────────────────────────────────────────"),
         Line::from(vec![
             Span::styled(
-                "  Mouse Click    ",
+                "  ? / F12        ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Click tabs at top ([1] Git Diff / [2] Artifacts)"),
+            Span::raw("Toggle this Help modal (Ctrl+H also supported)"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  1 / F1         ",
+                "  1 / 2          ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch to [1] Git Diff"),
+            Span::raw("Switch between [1] Git Diff and [2] Artifacts tabs"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  2 / F2         ",
+                "  Tab / Ctrl+T   ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch to [2] Artifacts (when available)"),
+            Span::raw("Cycle active tabs"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+T / Tab   ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Cycle between active tabs"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl+A         ",
+                "  a / A / Ctrl+A ",
                 Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Select Primary and Review AI from active Herdr agents"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+R         ",
-                Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Submit 5-Lens Code Review to Review AI pane"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl+S         ",
+                "  s / S / Ctrl+S ",
                 Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Submit Review AI output to Primary AI for validation"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+H         ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+                "  r / F5 / Ctrl+R",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle this help menu"),
+            Span::raw("Reload Git Diff and Artifacts from disk"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Ctrl+Q / q     ",
+                "  q / Ctrl+Q     ",
                 Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Quit Herdr Interactive Diff"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "󰊢 TAB 1: GIT DIFF & REVIEW COMMENTS",
+            Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("──────────────────────────────────────────────────────────────────"),
+        Line::from(vec![
+            Span::styled(
+                "  j / k / ↑ / ↓  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate files (in drawer) or code lines (in viewer)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  h / l / ← / →  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Collapse/expand directory (drawer) or switch drawer/code focus"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space / Enter  ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle folder collapse (drawer) or inspect review tooltip (code)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n / N          ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Jump to next / previous review comment hunk"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  /              ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Ask Primary AI a question about selected diff hunk"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  f              ",
+                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle between 'Diff Only' and 'Full File' view mode"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e / E          ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle lateral file drawer visibility"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Mouse Drag     ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Select code block to copy to system clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Cmd+C / Ctrl+C ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy current selection or line to system clipboard (pbcopy)"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "󰈙 TAB 2: WORKSPACE & AI ARTIFACTS",
+            Style::default().fg(pal.teal).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("──────────────────────────────────────────────────────────────────"),
+        Line::from(vec![
+            Span::styled(
+                "  j / k / ↑ / ↓  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate artifacts or scroll document"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter / l / →  ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Focus document reading view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc / h / ←    ",
+                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Return focus to artifact drawer"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  y / Cmd+C      ",
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Yank / copy artifact content to system clipboard"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1183,145 +1343,13 @@ fn render_help_modal(f: &mut Frame, app: &App) {
             ),
             Span::raw("Trigger Anti-Overengineering Validation (submits review to Primary AI)"),
         ]),
-        Line::from(vec![
-            Span::styled(
-                "  ?              ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Ask Primary AI a question about selected diff hunk"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "󰊢 TAB 1: GIT DIFF & REVIEW COMMENTS",
-            Style::default().fg(pal.mauve).add_modifier(Modifier::BOLD),
-        )]),
-        Line::from("──────────────────────────────────────────────────────────────────"),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Click    ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Click file in drawer to inspect, or click line for review comments"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Drag     ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Select code block to copy to system clipboard"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Cmd+C / Ctrl+C ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Copy current selection or line to system clipboard (pbcopy)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  ?              ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Ask Primary AI a question about selected diff hunk"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  j / k / ↑ / ↓  ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Navigate files (in drawer) or lines (in code viewer)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  f              ",
-                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Toggle between 'Diff Only' and 'Full File' view mode"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  e / E          ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Toggle file tree drawer"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Space / Enter  ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Toggle floating review tooltip (Caveman / Insight)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  r / F5         ",
-                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Reload Git Diff from disk"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "󰈙 TAB 2: WORKSPACE & AI ARTIFACTS",
-            Style::default().fg(pal.teal).add_modifier(Modifier::BOLD),
-        )]),
-        Line::from("──────────────────────────────────────────────────────────────────"),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Click    ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Click artifact in drawer to open, click document to scroll"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Mouse Drag     ",
-                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Select document text to copy to system clipboard"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  j / k / ↑ / ↓  ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Navigate artifacts or scroll document"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Enter / l / →  ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Focus document reading view"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Esc / h / ←    ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Return focus to artifact drawer"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  r / F5         ",
-                Style::default().fg(pal.green).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Reload artifacts from workspace, Herdr state, and AI sessions"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "[Esc / Enter / Ctrl+H] ",
-                Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Close help menu", Style::default().fg(pal.subtext0)),
-        ]),
     ];
 
     let total_lines = lines.len();
     let scroll_offset = app.help_scroll_offset;
     let scroll_info = if total_lines > 0 {
         format!(
-            " • [Line {}/{}] [j/k/↑/↓: Scroll]",
+            " • [Line {}/{}]",
             scroll_offset.min(total_lines) + 1,
             total_lines
         )
@@ -1344,7 +1372,23 @@ fn render_help_modal(f: &mut Frame, app: &App) {
                 .title(Span::styled(
                     title,
                     Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-                )),
+                ))
+                .title_bottom(
+                    Line::from(vec![
+                        Span::styled(
+                            " [j/k/↑/↓] ",
+                            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("Scroll ", Style::default().fg(pal.subtext0)),
+                        Span::styled("• ", Style::default().fg(pal.overlay0)),
+                        Span::styled(
+                            "[Esc / Enter / ?] ",
+                            Style::default().fg(pal.red).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("Close ", Style::default().fg(pal.subtext0)),
+                    ])
+                    .alignment(ratatui::layout::Alignment::Right),
+                ),
         );
 
     f.render_widget(modal, area);
@@ -1672,7 +1716,7 @@ mod tests {
         // Contains [1] and Git Diff and Ctrl+H for help, but not Artifacts when empty
         assert!(content.contains("[1]"));
         assert!(content.contains("Git Diff"));
-        assert!(content.contains("Ctrl+H for help"));
+        assert!(content.contains("? for help"));
         assert!(!content.contains("Artifacts"));
 
         // When artifacts present:
@@ -1762,8 +1806,8 @@ mod tests {
             line_1
         );
         assert!(
-            line_1.contains("Ctrl+H for help"),
-            "Inner line 1 must contain Ctrl+H for help: {}",
+            line_1.contains("? for help"),
+            "Inner line 1 must contain ? for help: {}",
             line_1
         );
     }
@@ -2097,4 +2141,36 @@ mod tests {
         assert!(content.contains("Assign"), "Must contain Assign action");
         assert!(content.contains("Close"), "Must contain Close action");
     }
+
+    #[test]
+    fn test_render_diff_tree_drawer_and_comment_counter() {
+        let backend = TestBackend::new(120, 60);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let diff = GitDiff::demo();
+        let mut app = App::new(diff, None);
+        let demo_classifications = crate::ai_engine::ClassificationResponse::demo();
+        app.set_classifications(demo_classifications.classifications);
+        app.active_tab = ActiveTab::GitDiff;
+        app.diff_pane_focus = DiffPaneFocus::FileList;
+        app.show_diff_tree = true;
+
+        let mut list_state = ListState::default();
+        terminal
+            .draw(|f| {
+                render_ui(f, &mut app, &mut list_state);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = format!("{:?}", buffer);
+
+        // Diff tree drawer should show folder icons and files
+        assert!(content.contains("src/"), "Must show src/ folder directory");
+        assert!(content.contains("session.rs"), "Must show file inside directory");
+        // Title must show comment counter badge
+        assert!(content.contains("Comments:"), "Must display review comments counter");
+        assert!(content.contains("[n/N: Jump]"), "Must display n/N shortcut hint");
+    }
 }
+
