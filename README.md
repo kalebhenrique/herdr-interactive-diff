@@ -73,21 +73,22 @@ Add these keybindings to `~/.config/herdr/config.toml` for seamless terminal orc
 | `1` / `F1`       | Switch to **[1] Git Diff** tab                                          |
 | `2` / `F2`       | Switch to **[2] Artifacts** tab (available when artifacts exist)        |
 | `Tab` / `Ctrl+T` | Cycle between active tabs                                               |
-| `Ctrl+A`         | Open **Agent Picker** modal (assign Primary & Review AI to Herdr panes) |
-| `Ctrl+R`         | Dispatch 5-Lens Code Review to Review AI pane                           |
-| `Ctrl+S`         | Dispatch Review output to Primary AI pane for validation                |
-| `Ctrl+H` / `F12` | Toggle Keybindings & Help modal                                         |
-| `Ctrl+Q` / `q`   | Exit `herdr-interactive-diff`                                           |
+| `a` / `Ctrl+A`   | Open **Agent Picker** modal (assign Primary & Review AI to Herdr panes) |
+| `s` / `Ctrl+S`   | Dispatch Review output to Primary AI pane for validation                |
+| `?` / `Ctrl+H`   | Toggle Keybindings & Help modal                                         |
+| `q` / `Ctrl+Q`   | Exit `herdr-interactive-diff`                                           |
 
 #### Tab 1: Git Diff & Review Comments
 
 | Key                   | Action                                                                |
 | :-------------------- | :-------------------------------------------------------------------- |
 | `j` / `k` / `↑` / `↓` | Navigate files (in drawer) or scroll lines (in code viewer)           |
+| `h` / `l`             | Collapse / expand directory or switch drawer/code viewer focus        |
 | `f`                   | Toggle between **Diff Only** and **Full File** view mode              |
 | `e` / `E`             | Toggle file tree drawer expand / collapse                             |
-| `Space` / `Enter`     | Toggle floating review tooltip (Caveman / Insight)                    |
-| `?`                   | Ask Primary AI a question regarding the selected diff hunk            |
+| `Space` / `Enter`     | Toggle folder collapse (in drawer) or review tooltip (in code viewer) |
+| `n` / `N`             | Jump to next / previous review comment hunk                           |
+| `/`                   | Ask Primary AI a question regarding the selected code / diff hunk     |
 | `Mouse Drag`          | Highlight and select code text                                        |
 | `Cmd+C` / `Ctrl+C`    | Copy current selection or line to system clipboard (`pbcopy` / OSC52) |
 | `r` / `F5`            | Reload Git Diff from disk                                             |
@@ -99,6 +100,7 @@ Add these keybindings to `~/.config/herdr/config.toml` for seamless terminal orc
 | `j` / `k` / `↑` / `↓` | Navigate artifact drawer or scroll markdown document   |
 | `Enter` / `l` / `→`   | Focus document reading view                            |
 | `Esc` / `h` / `←`     | Return focus to artifact drawer                        |
+| `y` / `Cmd+C`         | Yank / copy artifact text to clipboard                 |
 | `Mouse Drag`          | Select document text to copy to clipboard              |
 | `r` / `F5`            | Reload artifacts from workspace and active AI sessions |
 
