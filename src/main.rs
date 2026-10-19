@@ -356,7 +356,10 @@ async fn main() -> Result<()> {
                 Some(target_dir_resolved),
                 1,
             );
-            let _ = client.submit_agent_prompt(&target, &prompt);
+            if let Err(e) = client.submit_agent_prompt(&target, &prompt) {
+                eprintln!("\u{2717} Falha ao submeter prompt para {}: {}", target, e);
+                std::process::exit(1);
+            }
             let _ = client.focus_pane(&target);
             let _ = client.show_notification("5-Lens Code Review submitted to Review AI.");
             println!("✔ 5-Lens Code Review submitted to Review AI ({})", target);
@@ -405,7 +408,10 @@ async fn main() -> Result<()> {
                 Some(target_dir_resolved),
                 0,
             );
-            let _ = client.submit_agent_prompt(&target, &prompt);
+            if let Err(e) = client.submit_agent_prompt(&target, &prompt) {
+                eprintln!("\u{2717} Falha ao submeter prompt para {}: {}", target, e);
+                std::process::exit(1);
+            }
             let _ = client.focus_pane(&target);
             let _ = client.show_notification("Anti-overengineering validation submitted to Primary AI.");
             println!("✔ Validation prompt submitted to Primary AI ({})", target);

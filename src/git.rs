@@ -105,6 +105,59 @@ pub struct GitDiff {
     pub files: Vec<DiffFile>,
 }
 
+/// Remove do diff as seções de arquivos excluídos (ex.: lockfiles) e aplica cap
+/// de tamanho cortando em fronteira de arquivo, evitando estourar o limite de
+/// payload do socket do Herdr (o que derruba a submissão silenciosamente).
+const REVIEW_EXCLUDED_FILES: &[&str] = &[
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "composer.lock",
+    "Gemfile.lock",
+];
+
+fn filter_excluded_files_from_diff(text: &str, excluded: &[&str]) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut section_excluded = false;
+    for line in text.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let path = rest
+                .split_whitespace()
+                .last()
+                .map(|p| p.trim_start_matches("b/"))
+                .unwrap_or("");
+            section_excluded = excluded
+                .iter()
+                .any(|e| path == *e || path.ends_with(&format!("/{e}")));
+        }
+        if !section_excluded {
+            kept.push_str(line);
+        }
+    }
+    kept
+}
+
+fn cap_diff_size(text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut limit = max_bytes;
+    while limit > 0 && !text.is_char_boundary(limit) {
+        limit -= 1;
+    }
+    let head = &text[..limit];
+    let trailer = format!(
+        "\n[DIFF TRUNCATED: limite de {} bytes do prompt de review excedido]\n",
+        max_bytes
+    );
+    match head.rfind("\ndiff --git ") {
+        Some(cut) => format!("{}{}", &head[..cut + 1], trailer),
+        None => format!("{}{}", head, trailer),
+    }
+}
+
 impl GitDiff {
     /// Extrai o git diff do repositório local.
     /// Tenta em ordem: HEAD, working tree, staged (--cached), arquivos não-rastreados (untracked), branch diff e commit anterior.
@@ -178,6 +231,9 @@ impl GitDiff {
                 }
             }
         }
+
+        diff_text = filter_excluded_files_from_diff(&diff_text, REVIEW_EXCLUDED_FILES);
+        diff_text = cap_diff_size(diff_text, 300_000);
 
         let mut diff = Self::parse(&diff_text)?;
         for file in &mut diff.files {
